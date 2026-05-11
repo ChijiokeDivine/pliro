@@ -121,7 +121,7 @@ def format_welcome(first_name: str) -> str:
     name = escape_html(first_name)
     return (
         f"👋 <b>Welcome to Pliro, {name}!</b>\n"
-        f"{'─' * 28}"
+     
         "Your <b>AI-powered crypto wallet</b> is ready.\n"
         "Manage EVM &amp; Solana assets — just by chatting.\n\n"
         "<b>What you can do:</b>\n"
