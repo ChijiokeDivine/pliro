@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     # Startup: Register Telegram webhook
     # In production, this should be the public URL of your FastAPI app
-    webhook_url = "https://9701-102-90-103-133.ngrok-free.app/api/v1/bot/webhook" # Should probably be an env var
+    webhook_url = "https://plirome.onrender.com/api/v1/bot/webhook" # Should probably be an env var
     
     logger.info(f"`Setting Telegram webhook` to {webhook_url}")
     
