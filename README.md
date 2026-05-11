@@ -28,6 +28,7 @@
 ---
 
 ## Overview
+<img width="1383" height="1049" alt="image" src="https://github.com/user-attachments/assets/224f2043-be65-4e85-8095-3d4f377877d6" />
 
 Pliro is a Telegram-native crypto wallet assistant. Users interact entirely through natural language — no UI, no browser extension. The bot provisions self-custodial EVM and Solana wallets per user, and exposes wallet operations (balance, send, history, swap) through an LLM agent that interprets intent and calls the appropriate on-chain services.
 
