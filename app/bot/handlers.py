@@ -33,6 +33,9 @@ from app.bot.ui_formatters import (
     confirm_send_keyboard,
     confirm_swap_keyboard,
     chain_select_keyboard,
+    quick_actions_keyboard,
+    back_to_menu_quick_keyboard,
+    confirm_keyboard,
 )
 from app.wallet.gas import GasService
 
@@ -116,7 +119,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Failed to create user on start: {e}")
 
     text = format_welcome(user.first_name or "there")
-    await safe_send(update, text, keyboard=main_menu_keyboard())
+    await safe_send(update, text, keyboard=quick_actions_keyboard())
 
 
 # ─── /menu command ──────────────────────────────────────────────────────────
@@ -127,7 +130,128 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         "What would you like to do?"
     )
-    await safe_send(update, text, keyboard=main_menu_keyboard())
+    await safe_send(update, text, keyboard=quick_actions_keyboard())
+
+
+# ─── Command handlers for quick actions ──────────────────────────────────────
+
+async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler for /balance command."""
+    user_id = str(update.effective_user.id)
+    await context.bot.send_chat_action(
+        chat_id=update.effective_chat.id, action=ChatAction.TYPING
+    )
+    await safe_send(update, format_status("Calculating portfolio value…"), keyboard=quick_actions_keyboard())
+    try:
+        async with async_session_factory() as session:
+            user = await crud.get_or_create_user(session, int(user_id))
+            wallet = await crud.get_user_wallet(session, user.id)
+
+        if not wallet:
+            await safe_send(update, format_error("No wallet found. Send any message to set one up."),
+                             keyboard=quick_actions_keyboard())
+            return
+
+        portfolio = await zerion_client.get_portfolio(wallet.evm_address)
+        total = portfolio.get("total_value") or 0
+        change_abs = portfolio.get("change_1d_abs") or 0
+        change_perc = portfolio.get("change_1d_perc") or 0
+
+        # Get chain breakdown from full portfolio response
+        chain_breakdown = portfolio.get("chain_breakdown", {})
+
+        text = format_portfolio(total, change_abs, change_perc, chain_breakdown or None)
+        await safe_send(update, text, keyboard=quick_actions_keyboard())
+
+    except Exception as e:
+        logger.error(f"Balance command error: {e}", exc_info=True)
+        await safe_send(update, format_error(str(e)), keyboard=quick_actions_keyboard())
+
+
+async def addresses_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler for /addresses command."""
+    user_id = str(update.effective_user.id)
+    try:
+        async with async_session_factory() as session:
+            user = await crud.get_or_create_user(session, int(user_id))
+            wallet = await crud.get_user_wallet(session, user.id)
+
+        if not wallet:
+            await safe_send(update, format_error("No wallet found."),
+                             keyboard=quick_actions_keyboard())
+            return
+
+        text = format_wallet_addresses(wallet.evm_address, wallet.solana_address)
+        await safe_send(update, text, keyboard=quick_actions_keyboard())
+
+    except Exception as e:
+        logger.error(f"Addresses command error: {e}", exc_info=True)
+        await safe_send(update, format_error(str(e)), keyboard=quick_actions_keyboard())
+
+
+async def get_tokens_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler for /get_tokens command."""
+    user_id = str(update.effective_user.id)
+    await context.bot.send_chat_action(
+        chat_id=update.effective_chat.id, action=ChatAction.TYPING
+    )
+    await safe_send(update, format_status("Fetching token balances…"), keyboard=quick_actions_keyboard())
+    try:
+        async with async_session_factory() as session:
+            user = await crud.get_or_create_user(session, int(user_id))
+            wallet = await crud.get_user_wallet(session, user.id)
+
+        if not wallet:
+            await safe_send(update, format_error("No wallet found."),
+                             keyboard=quick_actions_keyboard())
+            return
+
+        positions = await zerion_client.get_positions(wallet.evm_address)
+        text = format_token_positions(positions)
+        await safe_send(update, text, keyboard=quick_actions_keyboard())
+
+    except Exception as e:
+        logger.error(f"Get tokens command error: {e}", exc_info=True)
+        await safe_send(update, format_error(str(e)), keyboard=quick_actions_keyboard())
+
+
+async def transactions_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler for /transactions command."""
+    user_id = str(update.effective_user.id)
+    await context.bot.send_chat_action(
+        chat_id=update.effective_chat.id, action=ChatAction.TYPING
+    )
+    await safe_send(update, format_status("Retrieving transaction history…"), keyboard=quick_actions_keyboard())
+    try:
+        async with async_session_factory() as session:
+            user = await crud.get_or_create_user(session, int(user_id))
+            wallet = await crud.get_user_wallet(session, user.id)
+
+        if not wallet:
+            await safe_send(update, format_error("No wallet found."),
+                             keyboard=quick_actions_keyboard())
+            return
+
+        txs = await zerion_client.get_transactions(wallet.evm_address, limit=10)
+        text = format_transaction_history(txs)
+        await safe_send(update, text, keyboard=quick_actions_keyboard())
+
+    except Exception as e:
+        logger.error(f"Transactions command error: {e}", exc_info=True)
+        await safe_send(update, format_error(str(e)), keyboard=quick_actions_keyboard())
+
+
+async def send_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler for /send command - prompts for send details."""
+    text = (
+        "📤 <b>Send Crypto</b>\n"
+        
+        "Just tell me what to send:\n\n"
+        "<i>Example:\n"
+        "  Send 0.01 ETH to 0xABC...123\n"
+        "  Send 5 USDC on Base to 0xABC...123</i>"
+    )
+    await safe_send(update, text, keyboard=quick_actions_keyboard())
 
 
 # ─── Inline button callbacks ────────────────────────────────────────────────
@@ -405,6 +529,63 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = update.message.text
+    
+    # ── Quick action buttons ───────────────────────────────────────────────
+    quick_actions_map = {
+        "💼 Balance": balance_command,
+        "🪙 Tokens": get_tokens_command,
+        "📬 Addresses": addresses_command,
+        "📜 History": transactions_command,
+        "📤 Send": send_command,
+        "📥 Receive": lambda u, c: button_callback_helper(u, c, "menu_receive"),
+        "💱 Swap": swap_command,
+        "⛽ Gas": lambda u, c: button_callback_helper(u, c, "menu_gas"),
+        "🏠 Main Menu": menu_command,
+    }
+    
+    if text in quick_actions_map:
+        await quick_actions_map[text](update, context)
+        return
+    
+    # Check for yes/cancel confirmations
+    if text.upper() in ("YES", "✅ YES"):
+        user_id = str(update.effective_user.id)
+        session_data = send_sessions.get(user_id)
+        if session_data:
+            # Handle send confirmation
+            await safe_send(update, format_status("Signing and broadcasting transaction…", "⏳"), keyboard=quick_actions_keyboard())
+            try:
+                async with async_session_factory() as session:
+                    user   = await crud.get_or_create_user(session, int(user_id))
+                    wallet = await crud.get_user_wallet(session, user.id)
+
+                chain      = session_data["chain"]
+                amount     = session_data["amount"]
+                to_address = session_data["to_address"]
+                token      = session_data.get("token", "ETH")
+
+                wei     = int(float(amount) * 10 ** 18)
+                tx_hash = await privy_client.send_evm_transaction(
+                    wallet_id=wallet.privy_evm_wallet_id,
+                    to_address=to_address,
+                    value_hex=hex(wei),
+                    chain=chain,
+                )
+
+                send_sessions.pop(user_id, None)
+                text = format_tx_success(tx_hash, chain, amount, token, to_address)
+                await safe_send(update, text, keyboard=quick_actions_keyboard())
+            except Exception as e:
+                logger.error(f"Confirm send error: {e}", exc_info=True)
+                await safe_send(update, format_error(str(e)), keyboard=quick_actions_keyboard())
+            return
+    
+    if text.upper() in ("CANCEL", "❌ CANCEL"):
+        user_id = str(update.effective_user.id)
+        send_sessions.pop(user_id, None)
+        await safe_send(update, "❌ <b>Cancelled.</b>", keyboard=quick_actions_keyboard())
+        return
+
     match = SEND_PATTERN.search(text)
     if match:
         amount, token, chain, to_address = match.groups()
@@ -433,7 +614,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             styled = format_status(new_status)
             if status_msg_ctx["message"] is None:
                 status_msg_ctx["message"] = await update.message.reply_text(
-                    styled, parse_mode=ParseMode.HTML
+                    styled, parse_mode=ParseMode.HTML, reply_markup=quick_actions_keyboard()
                 )
             else:
                 await context.bot.edit_message_text(
@@ -441,6 +622,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     message_id=status_msg_ctx["message"].message_id,
                     text=styled,
                     parse_mode=ParseMode.HTML,
+                    reply_markup=quick_actions_keyboard(),
                 )
             await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
         except Exception as e:
@@ -460,11 +642,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Check if agent response contains send confirmation to show inline button
         response_lower = response.lower()
-        keyboard = None
+        keyboard = quick_actions_keyboard()
         if any(kw in response_lower for kw in ["reply yes to confirm", "confirm or cancel", "send preview"]):
-            keyboard = confirm_send_keyboard()
+            keyboard = confirm_keyboard()
         elif "main menu" in response_lower or response.startswith("✅"):
-            keyboard = back_to_menu_keyboard()
+            keyboard = quick_actions_keyboard()
 
         if status_msg_ctx["message"]:
             try:
@@ -504,7 +686,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     message_id=status_msg_ctx["message"].message_id,
                     text=error_text,
                     parse_mode=ParseMode.HTML,
-                    reply_markup=back_to_menu_keyboard(),
+                    reply_markup=quick_actions_keyboard(),
                 )
             except Exception:
                 pass
@@ -512,8 +694,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 error_text,
                 parse_mode=ParseMode.HTML,
-                reply_markup=back_to_menu_keyboard(),
+                reply_markup=quick_actions_keyboard(),
             )
+
+
+# ─── Helper for button callbacks via message text ─────────────────────────────
+
+async def button_callback_helper(update: Update, context: ContextTypes.DEFAULT_TYPE, button_data: str):
+    """Simulates button callback behavior for quick action buttons."""
+    user_id = str(update.effective_user.id)
+    
+    if button_data == "menu_receive":
+        text = (
+            "📥 <b>Receive Funds</b>\n"
+            
+            "Select the chain you want to receive on:"
+        )
+        await safe_send(update, text, keyboard=chain_select_keyboard())
+    
+    elif button_data == "menu_gas":
+        await safe_send(update, format_status("Fetching gas prices…"), keyboard=quick_actions_keyboard())
+        try:
+            gas_info = await gas_service.get_gas_info("ethereum")
+            text = format_gas_prices(gas_info, "ethereum")
+            await safe_send(update, text, keyboard=quick_actions_keyboard())
+        except Exception as e:
+            logger.error(f"Gas command error: {e}", exc_info=True)
+            await safe_send(update, format_error(str(e)), keyboard=quick_actions_keyboard())
 
 
 # ─── /swap conversation ──────────────────────────────────────────────────────

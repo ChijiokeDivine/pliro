@@ -3,7 +3,7 @@ ui_formatters.py — Beautiful HTML-formatted message cards for Pliro bot.
 Uses Telegram HTML parse mode (more reliable than MarkdownV2).
 """
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 
 
 # ─────────────────────────────────────────────
@@ -111,6 +111,34 @@ def chain_select_keyboard() -> InlineKeyboardMarkup:
         ],
         [InlineKeyboardButton("🏠 Main Menu", callback_data="menu_home")],
     ])
+
+
+# ─────────────────────────────────────────────
+#  REPLY KEYBOARDS (Quick Action Buttons)
+# ─────────────────────────────────────────────
+
+def quick_actions_keyboard() -> ReplyKeyboardMarkup:
+    """Quick action buttons displayed persistently at bottom of screen."""
+    return ReplyKeyboardMarkup([
+        [KeyboardButton("💼 Balance"), KeyboardButton("🪙 Tokens")],
+        [KeyboardButton("📬 Addresses"), KeyboardButton("📜 History")],
+        [KeyboardButton("📤 Send"), KeyboardButton("📥 Receive")],
+        [KeyboardButton("💱 Swap"), KeyboardButton("⛽ Gas")],
+    ], resize_keyboard=True, one_time_keyboard=False)
+
+
+def back_to_menu_quick_keyboard() -> ReplyKeyboardMarkup:
+    """Simple back to menu button."""
+    return ReplyKeyboardMarkup([
+        [KeyboardButton("🏠 Main Menu")],
+    ], resize_keyboard=True, one_time_keyboard=False)
+
+
+def confirm_keyboard() -> ReplyKeyboardMarkup:
+    """Confirmation buttons for send/swap preview."""
+    return ReplyKeyboardMarkup([
+        [KeyboardButton("✅ YES"), KeyboardButton("❌ CANCEL")],
+    ], resize_keyboard=True, one_time_keyboard=True)
 
 
 # ─────────────────────────────────────────────

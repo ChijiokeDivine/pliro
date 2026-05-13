@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     # If not provided, we might need to derive it from DATABASE_URL
     ALEMBIC_DATABASE_URL: str | None = None
     WEBHOOK_URL: str = Field(..., description="Public URL for Telegram webhook, e.g. https://myapp.com")
+    REDIS_URL: str = Field(..., description="Redis connection URL, e.g. rediss://user:pass@host:port")
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

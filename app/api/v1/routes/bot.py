@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Request
-from telegram import Update
+from telegram import Update, BotCommand
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -12,6 +12,11 @@ from app.bot.handlers import (
     handle_message,
     start_command,
     menu_command,
+    balance_command,
+    addresses_command,
+    get_tokens_command,
+    transactions_command,
+    send_command,
     button_callback,
     swap_command,
     swap_input_token,
@@ -40,6 +45,11 @@ def get_telegram_app():
         # ── Commands ──────────────────────────────────────────────────────
         _telegram_app.add_handler(CommandHandler("start", start_command))
         _telegram_app.add_handler(CommandHandler("menu", menu_command))
+        _telegram_app.add_handler(CommandHandler("balance", balance_command))
+        _telegram_app.add_handler(CommandHandler("addresses", addresses_command))
+        _telegram_app.add_handler(CommandHandler("get_tokens", get_tokens_command))
+        _telegram_app.add_handler(CommandHandler("transactions", transactions_command))
+        _telegram_app.add_handler(CommandHandler("send", send_command))
 
         # ── Swap conversation ─────────────────────────────────────────────
         swap_conv = ConversationHandler(
@@ -60,7 +70,31 @@ def get_telegram_app():
         # ── General text messages ─────────────────────────────────────────
         _telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
+        # ── Set menu button (webapp icon in top right) ────────────────────
+        # This runs after initialization
+        _telegram_app.post_init = _setup_bot_commands
+
     return _telegram_app
+
+
+async def _setup_bot_commands(app: Application):
+    """Set up bot commands that appear in '/' menu."""
+    try:
+        # Set bot commands that appear in "/" menu
+        commands = [
+            BotCommand("start", "🚀 Start the bot"),
+            BotCommand("menu", "🏠 Main menu"),
+            BotCommand("balance", "💼 Check portfolio balance"),
+            BotCommand("addresses", "📬 View wallet addresses"),
+            BotCommand("get_tokens", "🪙 View token balances"),
+            BotCommand("transactions", "📜 View transaction history"),
+            BotCommand("send", "📤 Send crypto"),
+            BotCommand("swap", "💱 Swap tokens"),
+        ]
+        await app.bot.set_my_commands(commands)
+        logger.info("Bot commands registered successfully")
+    except Exception as e:
+        logger.warning(f"Failed to set bot commands: {e}")
 
 
 @router.post("/webhook")
