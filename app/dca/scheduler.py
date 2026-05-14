@@ -12,7 +12,7 @@ from apscheduler.executors.asyncio import AsyncIOExecutor
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.util import undefined
 
-from app.db.database import engine, async_session_factory
+from app.db.database import sync_engine, async_session_factory
 from app.dca.models import RecurringPayment, DCAStatus
 from app.dca.executor import DCAExecutor
 
@@ -55,9 +55,9 @@ class DCAScheduler:
     async def _setup(self):
         """Set up APScheduler with PostgreSQL job store."""
         try:
-            # Create job store
+            # Create job store using synchronous engine
             job_store = SQLAlchemyJobStore(
-                engine=engine,
+                engine=sync_engine,
             )
             
             # Create scheduler
