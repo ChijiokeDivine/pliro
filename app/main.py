@@ -4,6 +4,7 @@ from app.api.v1.routes import bot, health
 from app.config import settings
 import httpx
 from contextlib import asynccontextmanager
+from app.dca.scheduler import get_dca_scheduler
 
 # Configure logging
 logging.basicConfig(
@@ -29,6 +30,13 @@ async def lifespan(app: FastAPI):
             logger.info(f"Telegram webhook set successfully: {response.json()}")
         except Exception as e:
             logger.error(f"Failed to set Telegram webhook: {e}")
+    
+    # Initialize DCA scheduler
+    try:
+        dca_scheduler = await get_dca_scheduler()
+        logger.info("DCA Scheduler initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize DCA Scheduler: {e}")
             
     yield
     # Shutdown: could unregister webhook if desired

@@ -2,10 +2,10 @@ import uuid
 from datetime import datetime, timezone
 from sqlalchemy import BigInteger, String, DateTime, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from app.db.base import Base
 
-class Base(DeclarativeBase):
-    pass
+
 
 class TelegramUser(Base):
     __tablename__ = "telegram_users"

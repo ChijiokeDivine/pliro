@@ -28,6 +28,7 @@ from app.bot.handlers import (
     AMOUNT,
     CONFIRM_SWAP,
 )
+from app.dca.handlers import dca_command, dca_callback
 import logging
 from app.config import settings
 
@@ -50,6 +51,7 @@ def get_telegram_app():
         _telegram_app.add_handler(CommandHandler("get_tokens", get_tokens_command))
         _telegram_app.add_handler(CommandHandler("transactions", transactions_command))
         _telegram_app.add_handler(CommandHandler("send", send_command))
+        _telegram_app.add_handler(CommandHandler("dca", dca_command))
 
         # ── Swap conversation ─────────────────────────────────────────────
         swap_conv = ConversationHandler(
@@ -63,6 +65,9 @@ def get_telegram_app():
             fallbacks=[CommandHandler("cancel", swap_cancel)],
         )
         _telegram_app.add_handler(swap_conv)
+
+        # ── DCA callbacks ─────────────────────────────────────────────────
+        _telegram_app.add_handler(CallbackQueryHandler(dca_callback, pattern="^dca_"))
 
         # ── Inline button callbacks ───────────────────────────────────────
         _telegram_app.add_handler(CallbackQueryHandler(button_callback))
@@ -90,6 +95,7 @@ async def _setup_bot_commands(app: Application):
             BotCommand("transactions", "📜 View transaction history"),
             BotCommand("send", "📤 Send crypto"),
             BotCommand("swap", "💱 Swap tokens"),
+            BotCommand("dca", "💰 Dollar Cost Averaging"),
         ]
         await app.bot.set_my_commands(commands)
         logger.info("Bot commands registered successfully")

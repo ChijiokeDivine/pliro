@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "aioredis>=2.0.1",
     "alembic>=1.18.4",
+    "apscheduler>=3.11.2",
     "asyncpg>=0.31.0",
     "fastapi>=0.136.1",
     "google-genai>=1.74.0",
