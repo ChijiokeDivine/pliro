@@ -607,23 +607,44 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id not in chat_histories:
         chat_histories[user_id] = []
 
-    status_msg_ctx = {"message": None}
+    status_msg_ctx = {"message": None, "last_text": None}
 
     async def update_status(new_status: str):
         try:
             styled = format_status(new_status)
+            # Skip if text hasn't changed
+            if status_msg_ctx["last_text"] == styled:
+                return
+            
+            status_msg_ctx["last_text"] = styled
+            
             if status_msg_ctx["message"] is None:
                 status_msg_ctx["message"] = await update.message.reply_text(
-                    styled, parse_mode=ParseMode.HTML, reply_markup=quick_actions_keyboard()
-                )
-            else:
-                await context.bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=status_msg_ctx["message"].message_id,
-                    text=styled,
+                    styled,
                     parse_mode=ParseMode.HTML,
                     reply_markup=quick_actions_keyboard(),
+                    disable_web_page_preview=True,
                 )
+            else:
+                try:
+                    await context.bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=status_msg_ctx["message"].message_id,
+                        text=styled,
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=quick_actions_keyboard(),
+                        disable_web_page_preview=True,
+                    )
+                except Exception as edit_error:
+                    # If edit fails, send new message instead
+                    logger.warning(f"Failed to edit status message: {edit_error}. Sending new message.")
+                    status_msg_ctx["message"] = await update.message.reply_text(
+                        styled,
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=quick_actions_keyboard(),
+                        disable_web_page_preview=True,
+                    )
+            
             await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
         except Exception as e:
             logger.warning(f"Failed to update status: {e}")
@@ -658,13 +679,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     reply_markup=keyboard,
                     disable_web_page_preview=True,
                 )
-            except Exception:
-                await context.bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=status_msg_ctx["message"].message_id,
-                    text=response,
-                    reply_markup=keyboard,
-                )
+            except Exception as edit_err:
+                # If edit fails, just send new message
+                logger.warning(f"Failed to edit final response: {edit_err}. Sending new message.")
+                try:
+                    await update.message.reply_text(
+                        response,
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=keyboard,
+                        disable_web_page_preview=True,
+                    )
+                except Exception:
+                    await update.message.reply_text(response, reply_markup=keyboard)
         else:
             try:
                 await update.message.reply_text(
@@ -687,14 +713,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     text=error_text,
                     parse_mode=ParseMode.HTML,
                     reply_markup=quick_actions_keyboard(),
+                    disable_web_page_preview=True,
                 )
-            except Exception:
-                pass
+            except Exception as err:
+                # If edit fails, send new message
+                logger.warning(f"Failed to edit error message: {err}")
+                try:
+                    await update.message.reply_text(
+                        error_text,
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=quick_actions_keyboard(),
+                        disable_web_page_preview=True,
+                    )
+                except Exception:
+                    await update.message.reply_text(error_text, reply_markup=quick_actions_keyboard())
         else:
             await update.message.reply_text(
                 error_text,
                 parse_mode=ParseMode.HTML,
                 reply_markup=quick_actions_keyboard(),
+                disable_web_page_preview=True,
             )
 
 
