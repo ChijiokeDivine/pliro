@@ -2,33 +2,33 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, Asyn
 from sqlalchemy import create_engine
 from app.config import settings
 
-# DATABASE_URL should be using the asyncpg driver
-# Set statement_cache_size=0 for compatibility with PgBouncer (Supabase pooler)
+# Async engine — asyncpg uses "ssl" connect arg
 engine = create_async_engine(
-    settings.DATABASE_URL, 
-    echo=True, 
+    settings.DATABASE_URL,
+    echo=True,
     connect_args={
         "ssl": "require",
-        "statement_cache_size": 0
+        "statement_cache_size": 0,
     }
 )
 
 async_session_factory = async_sessionmaker(
-    engine, 
-    expire_on_commit=False, 
-    class_=AsyncSession
+    engine,
+    expire_on_commit=False,
+    class_=AsyncSession,
 )
 
-# Synchronous engine for APScheduler (which needs synchronous DDL operations)
-# Convert async URL to sync URL by replacing 'postgresql+asyncpg://' with 'postgresql://'
+# Sync engine — psycopg2 uses "sslmode" not "ssl"
 sync_db_url = settings.DATABASE_URL.replace(
     "postgresql+asyncpg://", "postgresql://"
-) if settings.DATABASE_URL.startswith("postgresql+asyncpg://") else settings.DATABASE_URL
+).replace(
+    "postgres://", "postgresql://"
+)
 
 sync_engine = create_engine(
     sync_db_url,
     echo=False,
-    connect_args={"ssl": "require"},
+    connect_args={"sslmode": "require"},  # ✅ correct for psycopg2
     pool_size=5,
     max_overflow=10,
 )
