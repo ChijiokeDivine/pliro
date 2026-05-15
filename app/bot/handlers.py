@@ -424,6 +424,24 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Gas callback error: {e}", exc_info=True)
             await safe_send(query, format_error(str(e)), keyboard=back_to_menu_keyboard(), edit=True)
 
+    # ── DCA ────────────────────────────────────────────────────────────────
+    elif data == "menu_dca":
+        text = (
+            "💰 <b>Dollar Cost Averaging (DCA)</b>\n"
+            
+            "Set up recurring payments to automatically send crypto\n"
+            "on a schedule. Perfect for regular investments.\n\n"
+            "<b>Available commands:</b>\n"
+            "/dca create - Create a new recurring payment\n"
+            "/dca list - View all your recurring payments\n"
+            "/dca pause [ID] - Pause a payment\n"
+            "/dca resume [ID] - Resume a payment\n"
+            "/dca cancel [ID] - Cancel a payment\n\n"
+            "<i>Example:\n"
+            "Send 10 dollars to 0x50C5b2... every monday</i>"
+        )
+        await safe_send(query, text, keyboard=back_to_menu_keyboard(), edit=True)
+
     # ── Confirm Send ──────────────────────────────────────────────────────
     elif data == "confirm_send":
         session_data = send_sessions.get(user_id)
@@ -540,6 +558,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📥 Receive": lambda u, c: button_callback_helper(u, c, "menu_receive"),
         "💱 Swap": swap_command,
         "⛽ Gas": lambda u, c: button_callback_helper(u, c, "menu_gas"),
+        "💰 DCA": lambda u, c: button_callback_helper(u, c, "menu_dca"),
         "🏠 Main Menu": menu_command,
     }
     
@@ -759,6 +778,23 @@ async def button_callback_helper(update: Update, context: ContextTypes.DEFAULT_T
         except Exception as e:
             logger.error(f"Gas command error: {e}", exc_info=True)
             await safe_send(update, format_error(str(e)), keyboard=quick_actions_keyboard())
+    
+    elif button_data == "menu_dca":
+        text = (
+            "💰 <b>Dollar Cost Averaging (DCA)</b>\n"
+            
+            "Set up recurring payments to automatically send crypto\n"
+            "on a schedule. Perfect for regular investments.\n\n"
+            "<b>Available commands:</b>\n"
+            "/dca create - Create a new recurring payment\n"
+            "/dca list - View all your recurring payments\n"
+            "/dca pause [ID] - Pause a payment\n"
+            "/dca resume [ID] - Resume a payment\n"
+            "/dca cancel [ID] - Cancel a payment\n\n"
+            "<i>Example:\n"
+            "Send 10 dollars to 0x50C5b2... every monday</i>"
+        )
+        await safe_send(update, text, keyboard=quick_actions_keyboard())
 
 
 # ─── /swap conversation ──────────────────────────────────────────────────────

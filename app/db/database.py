@@ -28,7 +28,7 @@ sync_db_url = settings.DATABASE_URL.replace(
 sync_engine = create_engine(
     sync_db_url,
     echo=False,
-    connect_args={"sslmode": "require"},  # ✅ correct for psycopg2
+    connect_args={"sslmode": "require"},  
     pool_size=5,
     max_overflow=10,
 )

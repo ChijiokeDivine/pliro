@@ -13,7 +13,12 @@ from app.tools.wallet_tools import (
     get_token_positions,
     get_transaction_history,
     send_crypto,
-    get_send_preview
+    get_send_preview,
+    list_dca_payments,
+    create_dca_payment,
+    pause_dca_payment,
+    resume_dca_payment,
+    cancel_dca_payment,
 )
 
 logger = logging.getLogger(__name__)
@@ -57,7 +62,12 @@ tools = [
     get_token_positions,
     get_transaction_history,
     send_crypto,
-    get_send_preview
+    get_send_preview,
+    list_dca_payments,
+    create_dca_payment,
+    pause_dca_payment,
+    resume_dca_payment,
+    cancel_dca_payment,
 ]
 
 system_prompt = PromptTemplate.from_template("""
@@ -205,6 +215,21 @@ TRANSACTION RULES:
 6. SWAP
 If the user asks to swap tokens, tell them to use the /swap command.
 Do not attempt to handle swaps yourself.
+
+
+7. DCA (DOLLAR COST AVERAGING)
+When the user wants to set up recurring payments or DCA:
+- Use list_dca_payments to show their existing payments
+- Use create_dca_payment to set up new recurring payments
+- Use pause_dca_payment, resume_dca_payment, or cancel_dca_payment to manage payments
+- Format the response clearly with payment details, schedule, and next execution time
+- Always confirm successful creation/changes
+
+DCA Examples the user might say:
+- "Set up a DCA to send 10 USDC every monday"
+- "Show my recurring payments"
+- "Pause payment #1"
+- "Create a daily $5 transfer"
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━

@@ -64,6 +64,9 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("💱 Swap", callback_data="menu_swap"),
             InlineKeyboardButton("⛽ Gas Prices", callback_data="menu_gas"),
         ],
+        [
+            InlineKeyboardButton("💰 DCA", callback_data="menu_dca"),
+        ],
     ])
 
 
@@ -124,6 +127,7 @@ def quick_actions_keyboard() -> ReplyKeyboardMarkup:
         [KeyboardButton("📬 Addresses"), KeyboardButton("📜 History")],
         [KeyboardButton("📤 Send"), KeyboardButton("📥 Receive")],
         [KeyboardButton("💱 Swap"), KeyboardButton("⛽ Gas")],
+        [KeyboardButton("💰 DCA")],
     ], resize_keyboard=True, one_time_keyboard=False)
 
 
@@ -157,7 +161,8 @@ def format_welcome(first_name: str) -> str:
         "  📬  View &amp; share wallet addresses\n"
         "  📤  Send crypto to any address\n"
         "  💱  Swap tokens instantly\n"
-        "  📜  View transaction history\n\n"
+        "  📜  View transaction history\n"
+        "  💰  Set up recurring payments (DCA)\n\n"
         "🔐 <i>Your private keys are secured by Privy MPC.\n"
         "We never store or see them.</i>\n\n"
         "Tap a button below or just <b>type what you need</b>."

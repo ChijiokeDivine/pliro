@@ -270,3 +270,245 @@ async def send_crypto(input_json: str) -> str:
             return "Solana sending is not fully implemented yet."
         else:
             return f"Unsupported chain: {chain}"
+
+
+# ─── DCA TOOLS ─────────────────────────────────────────────────────────────
+
+@tool
+async def list_dca_payments(telegram_user_id: str) -> str:
+    """
+    Lists all recurring payments (DCA) for the user.
+    Required: telegram_user_id (the numeric ID from context).
+    Returns a summary of all active and paused payments.
+    """
+    try:
+        user_id_int = extract_user_id(telegram_user_id)
+        user_id = str(user_id_int)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+    try:
+        from app.dca.crud import DCAOperations
+        
+        async with async_session_factory() as session:
+            payments = await DCAOperations.list_user_recurring_payments(session, user_id)
+        
+        if not payments:
+            return "No recurring payments found. Create one with /dca create"
+        
+        lines = ["💰 Your Recurring Payments:\n"]
+        for payment in payments:
+            status_icon = "✅" if payment.status == "active" else "⏸"
+            next_exec = payment.next_execution_at.strftime("%Y-%m-%d %H:%M UTC") if payment.next_execution_at else "N/A"
+            
+            lines.append(
+                f"{status_icon} Payment #{payment.id}\n"
+                f"  Amount: ${payment.amount} {payment.token_symbol}\n"
+                f"  To: {payment.recipient_address[:20]}...\n"
+                f"  Schedule: Every {payment.recurrence_type}\n"
+                f"  Next: {next_exec}\n"
+                f"  Status: {payment.status}\n"
+            )
+        
+        return "\n".join(lines)
+    
+    except Exception as e:
+        logger.error(f"Failed to list DCA payments: {e}", exc_info=True)
+        return f"Error fetching payments: {str(e)}"
+
+
+@tool
+async def create_dca_payment(input_json: str) -> str:
+    """
+    Creates a new recurring payment (DCA).
+    Input MUST be a JSON string with keys: telegram_user_id, recipient_address, amount, token_symbol, interval.
+    Optional: chain (default 'ethereum'), description.
+    Example: {"telegram_user_id": "6034765096", "recipient_address": "0x...", "amount": 10, "token_symbol": "USDC", "interval": "daily"}
+    Supported intervals: hourly, daily, weekly, monthly, or specific weekdays (monday-sunday).
+    """
+    try:
+        data = json.loads(input_json)
+        telegram_user_id = data["telegram_user_id"]
+        user_id_int = extract_user_id(telegram_user_id)
+        user_id = str(user_id_int)
+        recipient = data["recipient_address"]
+        amount = float(data["amount"])
+        token_symbol = data["token_symbol"]
+        interval = data["interval"]
+        chain = data.get("chain", "ethereum")
+        description = data.get("description", f"DCA: ${amount} {token_symbol} every {interval}")
+    except Exception as e:
+        return f"Error parsing input: {str(e)}"
+
+    try:
+        from app.dca.parser import DCAParser
+        from app.dca.crud import DCAOperations
+        from app.dca.scheduler import get_dca_scheduler
+        
+        # Validate recipient address
+        if not await DCAParser.validate_address(recipient):
+            return f"Invalid recipient address: {recipient}"
+        
+        # Calculate next execution time and cron expression
+        next_exec = DCAParser.calculate_next_execution(interval)
+        cron_expr = DCAParser.get_cron_expression(interval)
+        
+        async with async_session_factory() as session:
+            payment = await DCAOperations.create_recurring_payment(
+                session,
+                user_id=user_id,
+                recipient_address=recipient,
+                amount=amount,
+                token_symbol=token_symbol,
+                chain=chain,
+                recurrence_type=interval,
+                cron_expression=cron_expr,
+                next_execution_at=next_exec,
+                description=description,
+            )
+            await session.commit()
+            
+            # Schedule the job
+            scheduler = await get_dca_scheduler()
+            await scheduler.schedule_job(payment)
+        
+        return (
+            f"✅ DCA Created!\n"
+            f"Payment ID: #{payment.id}\n"
+            f"Amount: ${payment.amount} {payment.token_symbol}\n"
+            f"Schedule: Every {payment.recurrence_type}\n"
+            f"First execution: {payment.next_execution_at.strftime('%Y-%m-%d %H:%M UTC')}"
+        )
+    
+    except Exception as e:
+        logger.error(f"Failed to create DCA: {e}", exc_info=True)
+        return f"Error creating DCA: {str(e)}"
+
+
+@tool
+async def pause_dca_payment(input_json: str) -> str:
+    """
+    Pauses a recurring payment (DCA).
+    Input MUST be a JSON string with keys: telegram_user_id, payment_id.
+    Example: {"telegram_user_id": "6034765096", "payment_id": 1}
+    """
+    try:
+        data = json.loads(input_json)
+        telegram_user_id = data["telegram_user_id"]
+        user_id_int = extract_user_id(telegram_user_id)
+        user_id = str(user_id_int)
+        payment_id = int(data["payment_id"])
+    except Exception as e:
+        return f"Error parsing input: {str(e)}"
+
+    try:
+        from app.dca.crud import DCAOperations
+        from app.dca.scheduler import get_dca_scheduler
+        
+        async with async_session_factory() as session:
+            payment = await DCAOperations.get_recurring_payment(session, payment_id)
+            
+            if not payment:
+                return f"Payment #{payment_id} not found."
+            
+            if payment.user_id != user_id:
+                return "You don't have permission to pause this payment."
+            
+            await DCAOperations.pause_recurring_payment(session, payment_id)
+            await session.commit()
+            
+            # Pause scheduler job
+            scheduler = await get_dca_scheduler()
+            await scheduler.pause_job(payment_id)
+        
+        return f"⏸ Payment #{payment_id} paused successfully."
+    
+    except Exception as e:
+        logger.error(f"Failed to pause DCA: {e}", exc_info=True)
+        return f"Error pausing DCA: {str(e)}"
+
+
+@tool
+async def resume_dca_payment(input_json: str) -> str:
+    """
+    Resumes a paused recurring payment (DCA).
+    Input MUST be a JSON string with keys: telegram_user_id, payment_id.
+    Example: {"telegram_user_id": "6034765096", "payment_id": 1}
+    """
+    try:
+        data = json.loads(input_json)
+        telegram_user_id = data["telegram_user_id"]
+        user_id_int = extract_user_id(telegram_user_id)
+        user_id = str(user_id_int)
+        payment_id = int(data["payment_id"])
+    except Exception as e:
+        return f"Error parsing input: {str(e)}"
+
+    try:
+        from app.dca.crud import DCAOperations
+        from app.dca.scheduler import get_dca_scheduler
+        
+        async with async_session_factory() as session:
+            payment = await DCAOperations.get_recurring_payment(session, payment_id)
+            
+            if not payment:
+                return f"Payment #{payment_id} not found."
+            
+            if payment.user_id != user_id:
+                return "You don't have permission to resume this payment."
+            
+            await DCAOperations.resume_recurring_payment(session, payment_id)
+            await session.commit()
+            
+            # Resume scheduler job
+            scheduler = await get_dca_scheduler()
+            await scheduler.resume_job(payment_id)
+        
+        return f"✅ Payment #{payment_id} resumed successfully."
+    
+    except Exception as e:
+        logger.error(f"Failed to resume DCA: {e}", exc_info=True)
+        return f"Error resuming DCA: {str(e)}"
+
+
+@tool
+async def cancel_dca_payment(input_json: str) -> str:
+    """
+    Cancels and removes a recurring payment (DCA) permanently.
+    Input MUST be a JSON string with keys: telegram_user_id, payment_id.
+    Example: {"telegram_user_id": "6034765096", "payment_id": 1}
+    """
+    try:
+        data = json.loads(input_json)
+        telegram_user_id = data["telegram_user_id"]
+        user_id_int = extract_user_id(telegram_user_id)
+        user_id = str(user_id_int)
+        payment_id = int(data["payment_id"])
+    except Exception as e:
+        return f"Error parsing input: {str(e)}"
+
+    try:
+        from app.dca.crud import DCAOperations
+        from app.dca.scheduler import get_dca_scheduler
+        
+        async with async_session_factory() as session:
+            payment = await DCAOperations.get_recurring_payment(session, payment_id)
+            
+            if not payment:
+                return f"Payment #{payment_id} not found."
+            
+            if payment.user_id != user_id:
+                return "You don't have permission to cancel this payment."
+            
+            await DCAOperations.cancel_recurring_payment(session, payment_id)
+            await session.commit()
+            
+            # Cancel scheduler job
+            scheduler = await get_dca_scheduler()
+            await scheduler.cancel_job(payment_id)
+        
+        return f"❌ Payment #{payment_id} cancelled permanently."
+    
+    except Exception as e:
+        logger.error(f"Failed to cancel DCA: {e}", exc_info=True)
+        return f"Error cancelling DCA: {str(e)}"
