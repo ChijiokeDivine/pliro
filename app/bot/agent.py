@@ -14,6 +14,8 @@ from app.tools.wallet_tools import (
     get_transaction_history,
     send_crypto,
     get_send_preview,
+    get_token_price,
+    convert_usd_to_token,
     list_dca_payments,
     create_dca_payment,
     pause_dca_payment,
@@ -63,6 +65,8 @@ tools = [
     get_transaction_history,
     send_crypto,
     get_send_preview,
+    get_token_price,
+    convert_usd_to_token,
     list_dca_payments,
     create_dca_payment,
     pause_dca_payment,
@@ -170,7 +174,25 @@ TOKEN RULES:
 - Skip tokens with $0 value unless the user specifically asks.
 
 
-4. SEND PREVIEW
+4. USD TO TOKEN CONVERSION
+When the user specifies an amount in USD dollars (e.g., "send 20 dollars") instead of a token amount:
+- Call convert_usd_to_token with the USD amount and token symbol
+- Extract the token amount from the result
+- Then proceed to show the send preview with the converted amount
+- Do NOT ask the user to confirm the conversion, just use it automatically
+
+Examples user might say:
+- "Send 20 dollars to 0x..." (convert to ETH equivalent)
+- "Send $50 in USDC to..." (amount already in USDC, get price to verify)
+
+
+CONVERSION RULES:
+- Always use get_token_price or convert_usd_to_token to get the latest CoinGecko prices
+- Use the converted amount in send_crypto, not the original USD amount
+- Show the user both the USD amount AND token amount for clarity
+
+
+5. SEND PREVIEW
 Before executing any send, ALWAYS call get_send_preview first.
 After get_send_preview returns data, IMMEDIATELY produce your Final Answer.
 Do NOT call any other tool after get_send_preview. Do NOT think further.
@@ -197,7 +219,7 @@ SEND RULES:
 - NEVER include the user's Telegram ID in the preview or any send-related message.
 
 
-5. TRANSACTION HISTORY
+6. TRANSACTION HISTORY
 When showing transaction history:
 
 📜 <b>Transaction History</b>
@@ -212,12 +234,12 @@ TRANSACTION RULES:
 - Show at most 10 transactions.
 
 
-6. SWAP
+7. SWAP
 If the user asks to swap tokens, tell them to use the /swap command.
 Do not attempt to handle swaps yourself.
 
 
-7. DCA (DOLLAR COST AVERAGING)
+8. DCA (DOLLAR COST AVERAGING)
 When the user wants to set up recurring payments or DCA:
 - Use list_dca_payments to show their existing payments
 - Use create_dca_payment to set up new recurring payments

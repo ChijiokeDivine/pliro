@@ -4,8 +4,11 @@ from app.db import crud
 from app.wallet.privy import PrivyClient
 from app.wallet.zerion import ZerionClient
 from app.wallet.gas import GasService
+from app.config import settings
 import logging
 import json
+import aiohttp
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -270,6 +273,105 @@ async def send_crypto(input_json: str) -> str:
             return "Solana sending is not fully implemented yet."
         else:
             return f"Unsupported chain: {chain}"
+
+
+# ─── PRICE CONVERSION TOOLS ────────────────────────────────────────────────
+
+@tool
+async def get_token_price(token_symbol: str) -> str:
+    """
+    Gets the current USD price of a cryptocurrency using CoinGecko.
+    Required: token_symbol (e.g., "ETH", "USDC", "BTC").
+    Returns the current price in USD as a string.
+    Example: "get_token_price("ETH")" returns "2500.50"
+    """
+    try:
+        # Map common symbols to CoinGecko coin IDs
+        symbol_to_id = {
+            "ETH": "ethereum",
+            "ETHEREUM": "ethereum",
+            "BTC": "bitcoin",
+            "BITCOIN": "bitcoin",
+            "USDC": "usd-coin",
+            "USDT": "tether",
+            "DAI": "dai",
+            "WBTC": "wrapped-bitcoin",
+            "LINK": "chainlink",
+            "AAVE": "aave",
+            "UNI": "uniswap",
+            "MATIC": "polygon",
+            "SOL": "solana",
+            "SOLANA": "solana",
+            "ARB": "arbitrum",
+            "OP": "optimism",
+        }
+        
+        coin_id = symbol_to_id.get(token_symbol.upper())
+        if not coin_id:
+            # Fallback: treat input as coin ID directly
+            coin_id = token_symbol.lower()
+        
+        url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd&x_cg_demo_token={settings.COINGECKO_DEMO_API_KEY}"
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if coin_id in data and "usd" in data[coin_id]:
+                        price = data[coin_id]["usd"]
+                        return str(price)
+                    else:
+                        return f"Price data not found for {token_symbol}"
+                else:
+                    return f"Error fetching price: HTTP {response.status}"
+    
+    except asyncio.TimeoutError:
+        return "Request timed out while fetching price from CoinGecko"
+    except Exception as e:
+        logger.error(f"Failed to get token price for {token_symbol}: {e}", exc_info=True)
+        return f"Error: {str(e)}"
+
+
+@tool
+async def convert_usd_to_token(input_json: str) -> str:
+    """
+    Converts a USD amount to token quantity using current CoinGecko prices.
+    Input MUST be a JSON string with keys: usd_amount (required), token_symbol (required).
+    Example: {"usd_amount": 20, "token_symbol": "ETH"}
+    Returns the token quantity as a string, rounded to 6 decimals.
+    """
+    try:
+        data = json.loads(input_json)
+        usd_amount = float(data["usd_amount"])
+        token_symbol = data["token_symbol"]
+        
+        if usd_amount <= 0:
+            return "Error: USD amount must be greater than 0"
+        
+        # Get the current token price
+        price_str = await get_token_price(token_symbol)
+        
+        try:
+            price = float(price_str)
+        except ValueError:
+            return f"Error: Could not retrieve price for {token_symbol}: {price_str}"
+        
+        if price <= 0:
+            return f"Error: Invalid price {price} for {token_symbol}"
+        
+        # Calculate token quantity
+        token_quantity = usd_amount / price
+        
+        # Round to 6 decimals for display
+        return str(round(token_quantity, 6))
+    
+    except json.JSONDecodeError:
+        return "Error parsing input: Ensure you pass a valid JSON string"
+    except KeyError as e:
+        return f"Error: Missing required field {e}"
+    except Exception as e:
+        logger.error(f"Failed to convert USD to token: {e}", exc_info=True)
+        return f"Error: {str(e)}"
 
 
 # ─── DCA TOOLS ─────────────────────────────────────────────────────────────
