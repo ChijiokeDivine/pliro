@@ -447,8 +447,8 @@ async def create_dca_payment(input_json: str) -> str:
         from app.dca.crud import DCAOperations
         from app.dca.scheduler import get_dca_scheduler
         
-        # Validate recipient address
-        if not await DCAParser.validate_address(recipient):
+        # Validate recipient address (not async)
+        if not DCAParser.validate_address(recipient):
             return f"Invalid recipient address: {recipient}"
         
         # Calculate next execution time and cron expression
