@@ -333,6 +333,12 @@ async def _get_token_price(token_symbol: str) -> str:
 
 @tool
 async def get_token_price(token_symbol: str) -> str:
+    """
+    Gets the current USD price of a cryptocurrency using CoinGecko.
+    Required: token_symbol (e.g., "ETH", "USDC", "BTC").
+    Returns the current price in USD as a string.
+    Example: "get_token_price("ETH")" returns "2500.50"
+    """
     return await _get_token_price(token_symbol)
 
 
