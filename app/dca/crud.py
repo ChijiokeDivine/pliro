@@ -14,6 +14,15 @@ from app.dca.models import RecurringPayment, DCAExecutionLog, DCAStatus, Recurre
 logger = logging.getLogger(__name__)
 
 
+def _to_naive_utc(dt: Optional[datetime]) -> Optional[datetime]:
+    """Convert an aware datetime to naive UTC for TIMESTAMP WITHOUT TIME ZONE columns."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt
+    return dt.astimezone(timezone.utc).replace(tzinfo=None)
+
+
 class DCAOperations:
     """CRUD operations for recurring payments."""
     
@@ -58,7 +67,7 @@ class DCAOperations:
             chain=chain,
             recurrence_type=recurrence_type,
             cron_expression=cron_expression,
-            next_execution_at=next_execution_at,
+            next_execution_at=_to_naive_utc(next_execution_at),
             status=DCAStatus.ACTIVE.value,
             description=description,
             notes=notes,
@@ -148,6 +157,8 @@ class DCAOperations:
         
         for field, value in updates.items():
             if field in allowed_fields:
+                if field in {"next_execution_at", "last_execution_at"}:
+                    value = _to_naive_utc(value)
                 setattr(payment, field, value)
         
         session.add(payment)
@@ -230,7 +241,7 @@ class DCAOperations:
         """Get executions in the last N hours."""
         from datetime import timedelta
         
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+        cutoff = _to_naive_utc(datetime.now(timezone.utc) - timedelta(hours=hours))
         
         result = await session.execute(
             select(DCAExecutionLog)
@@ -250,7 +261,7 @@ class DCAOperations:
         """Get all failed executions in the last N hours."""
         from datetime import timedelta
         
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+        cutoff = _to_naive_utc(datetime.now(timezone.utc) - timedelta(hours=hours))
         
         result = await session.execute(
             select(DCAExecutionLog)

@@ -18,6 +18,15 @@ from sqlalchemy import select, update
 logger = logging.getLogger(__name__)
 
 
+def _to_naive_utc(dt: Optional[datetime]) -> Optional[datetime]:
+    """Convert an aware datetime to naive UTC for DCA DB timestamp columns."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt
+    return dt.astimezone(timezone.utc).replace(tzinfo=None)
+
+
 class DCAValidator:
     """Validates DCA execution conditions."""
     
@@ -139,7 +148,7 @@ class DCAValidator:
                     issues.append(f"Payment is {payment.status}, not active")
                 
                 # Check for duplicate execution in last 60 seconds
-                last_60s = datetime.now(timezone.utc) - timedelta(seconds=60)
+                last_60s = _to_naive_utc(datetime.now(timezone.utc) - timedelta(seconds=60))
                 result = await session.execute(
                     select(DCAExecutionLog).where(
                         DCAExecutionLog.recurring_payment_id == payment_id,
@@ -256,9 +265,9 @@ class DCAExecutor:
                     logger.info(f"Payment {payment_id} executed: TX {tx_hash}")
                     
                     # Update payment
-                    payment.last_execution_at = datetime.now(timezone.utc)
+                    payment.last_execution_at = _to_naive_utc(datetime.now(timezone.utc))
                     payment.execution_count = (payment.execution_count or 0) + 1
-                    payment.next_execution_at = self._calculate_next_execution(payment)
+                    payment.next_execution_at = _to_naive_utc(self._calculate_next_execution(payment))
                     session.add(payment)
                     
                     # Log execution
@@ -297,8 +306,8 @@ class DCAExecutor:
             log = DCAExecutionLog(
                 recurring_payment_id=payment_id,
                 user_id=user_id,
-                scheduled_at=datetime.now(timezone.utc),
-                executed_at=datetime.now(timezone.utc),
+                scheduled_at=_to_naive_utc(datetime.now(timezone.utc)),
+                executed_at=_to_naive_utc(datetime.now(timezone.utc)),
                 status=status,
                 transaction_hash=tx_hash,
                 amount=amount,
@@ -321,4 +330,4 @@ class DCAExecutor:
             return next_exec
         except Exception as e:
             logger.warning(f"Failed to calculate next execution: {e}")
-            return datetime.now(timezone.utc) + timedelta(hours=1)
+            return _to_naive_utc(datetime.now(timezone.utc) + timedelta(hours=1))
