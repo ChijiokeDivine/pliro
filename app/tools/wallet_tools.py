@@ -385,6 +385,12 @@ async def _convert_usd_to_token(input_json: str) -> str:
 
 @tool
 async def convert_usd_to_token(input_json: str) -> str:
+    """
+    Converts a USD amount to token quantity using current CoinGecko prices.
+    Input MUST be a JSON string with keys: usd_amount (required), token_symbol (required).
+    Example: {"usd_amount": 20, "token_symbol": "ETH"}
+    Returns the token quantity as a string, rounded to 6 decimals.
+    """
     return await _convert_usd_to_token(input_json)
 
 
