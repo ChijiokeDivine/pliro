@@ -156,6 +156,47 @@ async def dca_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "dca_cancel_creation":
         await query.edit_message_text("❌ <b>Creation cancelled.</b>", parse_mode=ParseMode.HTML)
 
+    elif query.data == "dca_list":
+        await _show_dca_list_callback(query, user_id)
+
+    elif query.data.startswith("dca_details:"):
+        payment_id = _parse_callback_payment_id(query.data, "dca_details:")
+        if payment_id is None:
+            await query.edit_message_text("❌ <b>Invalid payment ID.</b>", parse_mode=ParseMode.HTML)
+            return
+        await _show_dca_details(query, user_id, payment_id)
+
+    elif query.data.startswith("dca_manage:"):
+        payment_id = _parse_callback_payment_id(query.data, "dca_manage:")
+        if payment_id is None:
+            await query.edit_message_text("❌ <b>Invalid payment ID.</b>", parse_mode=ParseMode.HTML)
+            return
+        await _show_dca_manage(query, user_id, payment_id)
+
+    elif query.data.startswith("dca_pause:"):
+        payment_id = _parse_callback_payment_id(query.data, "dca_pause:")
+        if payment_id is None:
+            await query.edit_message_text("❌ <b>Invalid payment ID.</b>", parse_mode=ParseMode.HTML)
+            return
+        await _handle_dca_pause_callback(query, user_id, payment_id)
+
+    elif query.data.startswith("dca_resume:"):
+        payment_id = _parse_callback_payment_id(query.data, "dca_resume:")
+        if payment_id is None:
+            await query.edit_message_text("❌ <b>Invalid payment ID.</b>", parse_mode=ParseMode.HTML)
+            return
+        await _handle_dca_resume_callback(query, user_id, payment_id)
+
+    elif query.data.startswith("dca_cancel:"):
+        payment_id = _parse_callback_payment_id(query.data, "dca_cancel:")
+        if payment_id is None:
+            await query.edit_message_text("❌ <b>Invalid payment ID.</b>", parse_mode=ParseMode.HTML)
+            return
+        await _handle_dca_cancel_callback(query, user_id, payment_id)
+
+    else:
+        await query.answer("Unsupported DCA action.", show_alert=False)
+
 
 async def _confirm_dca_creation(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: str, command: str):
     """Confirm and create DCA."""
@@ -224,28 +265,8 @@ async def _handle_dca_list(update: Update, context: ContextTypes.DEFAULT_TYPE, u
             )
             return
         
-        # Build payments list
-        text = "<b>💰 Your Recurring Payments</b>\n\n"
-        
-        for payment in payments:
-            status_emoji = "✅" if payment.status == "active" else "⏸"
-            next_exec = payment.next_execution_at.strftime("%Y-%m-%d %H:%M") if payment.next_execution_at else "N/A"
-            
-            text += (
-                f"{status_emoji} <b>#{payment.id}</b> - ${payment.amount} {payment.token_symbol}\n"
-                f"   → {payment.recipient_address[:20]}...\n"
-                f"   ⏰ Every {payment.recurrence_type}\n"
-                f"   Next: {next_exec}\n"
-                f"   Status: {payment.status}\n\n"
-            )
-        
-        # Add management buttons
-        keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("📋 Details", callback_data="dca_details"),
-                InlineKeyboardButton("⏸ Manage", callback_data="dca_manage"),
-            ]
-        ])
+        text = _build_dca_list_text(payments)
+        keyboard = _build_dca_list_keyboard(payments)
         
         await update.message.reply_text(
             text,
@@ -384,3 +405,221 @@ async def _handle_dca_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE,
             format_error(str(e)),
             parse_mode=ParseMode.HTML
         )
+
+
+def _parse_callback_payment_id(callback_data: str, prefix: str) -> Optional[int]:
+    """Extract payment ID from callback data."""
+    try:
+        return int(callback_data.replace(prefix, "", 1))
+    except (TypeError, ValueError):
+        return None
+
+
+def _format_next_execution(payment) -> str:
+    """Format the next execution timestamp for display."""
+    if not payment.next_execution_at:
+        return "N/A"
+    return payment.next_execution_at.strftime("%Y-%m-%d %H:%M UTC")
+
+
+def _build_dca_list_text(payments) -> str:
+    """Build the recurring payments list text."""
+    text = "<b>💰 Your Recurring Payments</b>\n\n"
+    for payment in payments:
+        status_emoji = "✅" if payment.status == "active" else "⏸"
+        text += (
+            f"{status_emoji} <b>#{payment.id}</b> - ${payment.amount} {payment.token_symbol}\n"
+            f"   → {payment.recipient_address[:20]}...\n"
+            f"   ⏰ Every {payment.recurrence_type}\n"
+            f"   Next: {_format_next_execution(payment)}\n"
+            f"   Status: {payment.status}\n\n"
+        )
+    return text
+
+
+def _build_dca_list_keyboard(payments) -> InlineKeyboardMarkup:
+    """Build per-payment action buttons for the DCA list."""
+    rows = []
+    for payment in payments:
+        rows.append([
+            InlineKeyboardButton(f"📋 #{payment.id}", callback_data=f"dca_details:{payment.id}"),
+            InlineKeyboardButton(f"⚙️ #{payment.id}", callback_data=f"dca_manage:{payment.id}"),
+        ])
+    return InlineKeyboardMarkup(rows)
+
+
+async def _get_user_payment(user_id: str, payment_id: int):
+    """Fetch a payment and verify it belongs to the user."""
+    async with async_session_factory() as session:
+        payment = await DCAOperations.get_recurring_payment(session, payment_id)
+        if not payment or payment.user_id != user_id:
+            return None
+        return payment
+
+
+async def _show_dca_list_callback(query, user_id: str):
+    """Show the DCA list in response to an inline callback."""
+    try:
+        async with async_session_factory() as session:
+            payments = await DCAOperations.list_user_recurring_payments(session, user_id)
+
+        if not payments:
+            await query.edit_message_text(
+                "📭 <b>No recurring payments.</b>\n\nCreate your first DCA with /dca create",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        await query.edit_message_text(
+            _build_dca_list_text(payments),
+            parse_mode=ParseMode.HTML,
+            reply_markup=_build_dca_list_keyboard(payments),
+        )
+    except Exception as e:
+        logger.error(f"Failed to show DCA list callback: {e}", exc_info=True)
+        await query.edit_message_text(format_error(str(e)), parse_mode=ParseMode.HTML)
+
+
+async def _show_dca_details(query, user_id: str, payment_id: int):
+    """Show details for a single recurring payment."""
+    try:
+        payment = await _get_user_payment(user_id, payment_id)
+        if not payment:
+            await query.edit_message_text("❌ <b>Payment not found.</b>", parse_mode=ParseMode.HTML)
+            return
+
+        text = (
+            f"<b>📋 Payment #{payment.id}</b>\n\n"
+            f"<b>Amount:</b> ${payment.amount} {payment.token_symbol}\n"
+            f"<b>Recipient:</b> <code>{payment.recipient_address}</code>\n"
+            f"<b>Chain:</b> {payment.chain}\n"
+            f"<b>Schedule:</b> Every {payment.recurrence_type}\n"
+            f"<b>Cron:</b> <code>{payment.cron_expression}</code>\n"
+            f"<b>Next execution:</b> {_format_next_execution(payment)}\n"
+            f"<b>Status:</b> {payment.status}\n"
+            f"<b>Executions:</b> {payment.execution_count or 0}"
+        )
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⚙️ Manage", callback_data=f"dca_manage:{payment.id}")],
+            [InlineKeyboardButton("⬅️ Back", callback_data="dca_list")],
+        ])
+        await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+    except Exception as e:
+        logger.error(f"Failed to show DCA details: {e}", exc_info=True)
+        await query.edit_message_text(format_error(str(e)), parse_mode=ParseMode.HTML)
+
+
+async def _show_dca_manage(query, user_id: str, payment_id: int):
+    """Show management actions for a recurring payment."""
+    try:
+        payment = await _get_user_payment(user_id, payment_id)
+        if not payment:
+            await query.edit_message_text("❌ <b>Payment not found.</b>", parse_mode=ParseMode.HTML)
+            return
+
+        action_button = (
+            InlineKeyboardButton("⏸ Pause", callback_data=f"dca_pause:{payment.id}")
+            if payment.status == "active"
+            else InlineKeyboardButton("▶️ Resume", callback_data=f"dca_resume:{payment.id}")
+        )
+        keyboard = InlineKeyboardMarkup([
+            [action_button, InlineKeyboardButton("🗑 Cancel", callback_data=f"dca_cancel:{payment.id}")],
+            [InlineKeyboardButton("📋 Details", callback_data=f"dca_details:{payment.id}")],
+            [InlineKeyboardButton("⬅️ Back", callback_data="dca_list")],
+        ])
+        text = (
+            f"<b>⚙️ Manage Payment #{payment.id}</b>\n\n"
+            f"<b>Amount:</b> ${payment.amount} {payment.token_symbol}\n"
+            f"<b>Status:</b> {payment.status}\n"
+            f"<b>Next execution:</b> {_format_next_execution(payment)}"
+        )
+        await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+    except Exception as e:
+        logger.error(f"Failed to show DCA manage actions: {e}", exc_info=True)
+        await query.edit_message_text(format_error(str(e)), parse_mode=ParseMode.HTML)
+
+
+async def _handle_dca_pause_callback(query, user_id: str, payment_id: int):
+    """Pause a recurring payment from an inline button."""
+    try:
+        async with async_session_factory() as session:
+            payment = await DCAOperations.get_recurring_payment(session, payment_id)
+            if not payment or payment.user_id != user_id:
+                await query.edit_message_text("❌ <b>Payment not found.</b>", parse_mode=ParseMode.HTML)
+                return
+
+            await DCAOperations.pause_recurring_payment(session, payment_id)
+            await session.commit()
+
+        scheduler = await get_dca_scheduler()
+        await scheduler.pause_job(payment_id)
+
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Back To Manage", callback_data=f"dca_manage:{payment_id}")],
+            [InlineKeyboardButton("📋 Back To List", callback_data="dca_list")],
+        ])
+        await query.edit_message_text(
+            f"⏸ <b>Payment #{payment_id} paused.</b>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard,
+        )
+    except Exception as e:
+        logger.error(f"Failed to pause DCA from callback: {e}", exc_info=True)
+        await query.edit_message_text(format_error(str(e)), parse_mode=ParseMode.HTML)
+
+
+async def _handle_dca_resume_callback(query, user_id: str, payment_id: int):
+    """Resume a recurring payment from an inline button."""
+    try:
+        async with async_session_factory() as session:
+            payment = await DCAOperations.get_recurring_payment(session, payment_id)
+            if not payment or payment.user_id != user_id:
+                await query.edit_message_text("❌ <b>Payment not found.</b>", parse_mode=ParseMode.HTML)
+                return
+
+            await DCAOperations.resume_recurring_payment(session, payment_id)
+            await session.commit()
+
+        scheduler = await get_dca_scheduler()
+        await scheduler.resume_job(payment_id)
+
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Back To Manage", callback_data=f"dca_manage:{payment_id}")],
+            [InlineKeyboardButton("📋 Back To List", callback_data="dca_list")],
+        ])
+        await query.edit_message_text(
+            f"▶️ <b>Payment #{payment_id} resumed.</b>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard,
+        )
+    except Exception as e:
+        logger.error(f"Failed to resume DCA from callback: {e}", exc_info=True)
+        await query.edit_message_text(format_error(str(e)), parse_mode=ParseMode.HTML)
+
+
+async def _handle_dca_cancel_callback(query, user_id: str, payment_id: int):
+    """Cancel a recurring payment from an inline button."""
+    try:
+        async with async_session_factory() as session:
+            payment = await DCAOperations.get_recurring_payment(session, payment_id)
+            if not payment or payment.user_id != user_id:
+                await query.edit_message_text("❌ <b>Payment not found.</b>", parse_mode=ParseMode.HTML)
+                return
+
+            await DCAOperations.cancel_recurring_payment(session, payment_id)
+            await session.commit()
+
+        scheduler = await get_dca_scheduler()
+        await scheduler.unschedule_job(payment_id)
+
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📋 Back To List", callback_data="dca_list")],
+        ])
+        await query.edit_message_text(
+            f"✅ <b>Payment #{payment_id} cancelled.</b>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard,
+        )
+    except Exception as e:
+        logger.error(f"Failed to cancel DCA from callback: {e}", exc_info=True)
+        await query.edit_message_text(format_error(str(e)), parse_mode=ParseMode.HTML)
