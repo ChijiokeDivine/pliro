@@ -253,6 +253,19 @@ class DCAParser:
         return bool(re.match(r"^0x[a-fA-F0-9]{40}$", address))
     
     @staticmethod
+    def get_cron_expression(interval: str) -> str:
+        """Get cron expression for a given interval string."""
+        try:
+            # Try to get from enum directly
+            return DCAParser.CRON_EXPRESSIONS[RecurrenceInterval(interval)]
+        except ValueError:
+            # If not a direct enum match, try case-insensitive lookup
+            for enum_val in RecurrenceInterval:
+                if enum_val.value.lower() == interval.lower():
+                    return DCAParser.CRON_EXPRESSIONS[enum_val]
+            raise ValueError(f"Invalid interval: {interval}")
+    
+    @staticmethod
     def calculate_next_execution(interval: str) -> datetime:
         """
         Calculate next execution time for an interval.

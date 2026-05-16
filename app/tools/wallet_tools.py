@@ -277,8 +277,7 @@ async def send_crypto(input_json: str) -> str:
 
 # ─── PRICE CONVERSION TOOLS ────────────────────────────────────────────────
 
-@tool
-async def get_token_price(token_symbol: str) -> str:
+async def _get_token_price(token_symbol: str) -> str:
     """
     Gets the current USD price of a cryptocurrency using CoinGecko.
     Required: token_symbol (e.g., "ETH", "USDC", "BTC").
@@ -333,7 +332,11 @@ async def get_token_price(token_symbol: str) -> str:
 
 
 @tool
-async def convert_usd_to_token(input_json: str) -> str:
+async def get_token_price(token_symbol: str) -> str:
+    return await _get_token_price(token_symbol)
+
+
+async def _convert_usd_to_token(input_json: str) -> str:
     """
     Converts a USD amount to token quantity using current CoinGecko prices.
     Input MUST be a JSON string with keys: usd_amount (required), token_symbol (required).
@@ -349,7 +352,7 @@ async def convert_usd_to_token(input_json: str) -> str:
             return "Error: USD amount must be greater than 0"
         
         # Get the current token price
-        price_str = await get_token_price(token_symbol)
+        price_str = await _get_token_price(token_symbol)
         
         try:
             price = float(price_str)
@@ -372,6 +375,11 @@ async def convert_usd_to_token(input_json: str) -> str:
     except Exception as e:
         logger.error(f"Failed to convert USD to token: {e}", exc_info=True)
         return f"Error: {str(e)}"
+
+
+@tool
+async def convert_usd_to_token(input_json: str) -> str:
+    return await _convert_usd_to_token(input_json)
 
 
 # ─── DCA TOOLS ─────────────────────────────────────────────────────────────

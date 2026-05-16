@@ -63,6 +63,7 @@ def get_telegram_app():
                 CONFIRM_SWAP: [CallbackQueryHandler(button_callback, pattern="^(confirm_swap|cancel_swap)$")],
             },
             fallbacks=[CommandHandler("cancel", swap_cancel)],
+            per_message=True,
         )
         _telegram_app.add_handler(swap_conv)
 
