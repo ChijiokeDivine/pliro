@@ -336,10 +336,11 @@ async def _get_binance_price(token_symbol: str) -> str | None:
         return None
 
 
+
 async def _get_token_price(token_symbol: str) -> str:
     """
     Gets the current USD price of a cryptocurrency.
-    Tries CoinGecko → Binance → CryptoCompare, returning the first success.
+    Tries CryptoCompare → CoinGecko, returning the first success.
     """
     symbol_to_id = {
         "ETH": "ethereum",
@@ -360,7 +361,17 @@ async def _get_token_price(token_symbol: str) -> str:
         "OP": "optimism",
     }
 
-    # 1. Try CoinGecko
+    # 1. Try CryptoCompare
+    try:
+        cc_price = await _get_cryptocompare_price(token_symbol)
+        if cc_price:
+            return cc_price
+        logger.warning(f"CryptoCompare returned no price for {token_symbol}")
+    except Exception as e:
+        logger.error(f"CryptoCompare exception for {token_symbol}: {e}", exc_info=True)
+
+    # 2. Try CoinGecko
+    logger.info(f"CryptoCompare failed, trying CoinGecko for {token_symbol}")
     try:
         coin_id = symbol_to_id.get(token_symbol.upper(), token_symbol.lower())
         url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd"
@@ -381,20 +392,10 @@ async def _get_token_price(token_symbol: str) -> str:
     except Exception as e:
         logger.error(f"CoinGecko exception for {token_symbol}: {e}", exc_info=True)
 
-    # 2. Try Binance
-    logger.info(f"CoinGecko failed, trying Binance for {token_symbol}")
-    binance_price = await _get_binance_price(token_symbol)
-    if binance_price:
-        return binance_price
-
-    # 3. Try CryptoCompare
-    logger.info(f"Binance failed, trying CryptoCompare for {token_symbol}")
-    cc_price = await _get_cryptocompare_price(token_symbol)
-    if cc_price:
-        return cc_price
-
     logger.error(f"All price sources failed for {token_symbol}")
     return f"Price data not found for {token_symbol}"
+
+
 
 @tool
 async def get_token_price(token_symbol: str) -> str:
