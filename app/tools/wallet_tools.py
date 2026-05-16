@@ -277,10 +277,29 @@ async def send_crypto(input_json: str) -> str:
 
 # ─── PRICE CONVERSION TOOLS ────────────────────────────────────────────────
 
+async def _get_cryptocompare_price(token_symbol: str) -> str | None:
+    """Get price from CryptoCompare's free API as fallback."""
+    try:
+        url = f"https://min-api.cryptocompare.com/data/price?fsym={token_symbol.upper()}&tsyms=USD"
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                logger.debug(f"CryptoCompare response status for {token_symbol}: {response.status}")
+                if response.status == 200:
+                    data = await response.json()
+                    if "USD" in data:
+                        return str(data["USD"])
+                    elif "Response" in data and data["Response"] == "Error":
+                        logger.warning(f"CryptoCompare error for {token_symbol}: {data.get('Message')}")
+        return None
+    except Exception as e:
+        logger.warning(f"Failed to get CryptoCompare price for {token_symbol}: {e}", exc_info=True)
+        return None
+
+
 async def _get_binance_price(token_symbol: str) -> str | None:
     """Get price from Binance's free API as fallback."""
     try:
-        # Map token symbols to Binance pairs
         binance_symbols = {
             "ETH": "ETHUSDT",
             "BTC": "BTCUSDT",
@@ -293,102 +312,89 @@ async def _get_binance_price(token_symbol: str) -> str | None:
             "USDC": "USDCUSDT",
             "USDT": "USDTUSDT"
         }
-        
+
         symbol_upper = token_symbol.upper()
         binance_pair = binance_symbols.get(symbol_upper)
-        
+
         if not binance_pair:
             return None
-        
+
         url = f"https://api.binance.com/api/v3/ticker/price?symbol={binance_pair}"
-        
+
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                logger.debug(f"Binance response status for {token_symbol}: {response.status}")
                 if response.status == 200:
                     data = await response.json()
                     if "price" in data:
-                        price = float(data["price"])
-                        return str(price)
+                        return str(float(data["price"]))
+                else:
+                    logger.warning(f"Binance returned {response.status} for {token_symbol}: {await response.text()}")
         return None
     except Exception as e:
-        logger.warning(f"Failed to get Binance price for {token_symbol}: {e}")
+        logger.warning(f"Failed to get Binance price for {token_symbol}: {e}", exc_info=True)
         return None
 
 
 async def _get_token_price(token_symbol: str) -> str:
     """
-    Gets the current USD price of a cryptocurrency using CoinGecko.
-    Falls back to Binance's free API if CoinGecko fails.
-    Required: token_symbol (e.g., "ETH", "USDC", "BTC").
-    Returns the current price in USD as a string.
-    Example: "get_token_price("ETH")" returns "2500.50"
+    Gets the current USD price of a cryptocurrency.
+    Tries CoinGecko → Binance → CryptoCompare, returning the first success.
     """
+    symbol_to_id = {
+        "ETH": "ethereum",
+        "ETHEREUM": "ethereum",
+        "BTC": "bitcoin",
+        "BITCOIN": "bitcoin",
+        "USDC": "usd-coin",
+        "USDT": "tether",
+        "DAI": "dai",
+        "WBTC": "wrapped-bitcoin",
+        "LINK": "chainlink",
+        "AAVE": "aave",
+        "UNI": "uniswap",
+        "MATIC": "polygon",
+        "SOL": "solana",
+        "SOLANA": "solana",
+        "ARB": "arbitrum",
+        "OP": "optimism",
+    }
+
+    # 1. Try CoinGecko
     try:
-        # Map common symbols to CoinGecko coin IDs
-        symbol_to_id = {
-            "ETH": "ethereum",
-            "ETHEREUM": "ethereum",
-            "BTC": "bitcoin",
-            "BITCOIN": "bitcoin",
-            "USDC": "usd-coin",
-            "USDT": "tether",
-            "DAI": "dai",
-            "WBTC": "wrapped-bitcoin",
-            "LINK": "chainlink",
-            "AAVE": "aave",
-            "UNI": "uniswap",
-            "MATIC": "polygon",
-            "SOL": "solana",
-            "SOLANA": "solana",
-            "ARB": "arbitrum",
-            "OP": "optimism",
-        }
-        
-        coin_id = symbol_to_id.get(token_symbol.upper())
-        if not coin_id:
-            # Fallback: treat input as coin ID directly
-            coin_id = token_symbol.lower()
-        
+        coin_id = symbol_to_id.get(token_symbol.upper(), token_symbol.lower())
         url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd"
         if settings.COINGECKO_DEMO_API_KEY:
             url += f"&x_cg_demo_token={settings.COINGECKO_DEMO_API_KEY}"
-        
-        logger.debug(f"Fetching price from CoinGecko: {url}")
-        
+
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                logger.debug(f"CoinGecko response status: {response.status}")
+                logger.debug(f"CoinGecko response status for {token_symbol}: {response.status}")
                 if response.status == 200:
                     data = await response.json()
-                    logger.debug(f"CoinGecko response data: {data}")
                     if coin_id in data and "usd" in data[coin_id]:
-                        price = data[coin_id]["usd"]
-                        return str(price)
-        
-        # If CoinGecko failed, try Binance
-        logger.info(f"CoinGecko failed, trying Binance for {token_symbol}")
-        binance_price = await _get_binance_price(token_symbol)
-        if binance_price:
-            return binance_price
-        
-        return f"Price data not found for {token_symbol}"
-    
+                        return str(data[coin_id]["usd"])
+                else:
+                    logger.warning(f"CoinGecko returned {response.status} for {token_symbol}")
     except asyncio.TimeoutError:
-        # Try Binance on timeout too
-        logger.info(f"CoinGecko timeout, trying Binance for {token_symbol}")
-        binance_price = await _get_binance_price(token_symbol)
-        if binance_price:
-            return binance_price
-        return "Request timed out while fetching price"
+        logger.warning(f"CoinGecko timed out for {token_symbol}")
     except Exception as e:
-        logger.error(f"Failed to get token price for {token_symbol}: {e}", exc_info=True)
-        # Try Binance on any exception
-        logger.info(f"Trying Binance fallback for {token_symbol}")
-        binance_price = await _get_binance_price(token_symbol)
-        if binance_price:
-            return binance_price
-        return f"Error: {str(e)}"
+        logger.error(f"CoinGecko exception for {token_symbol}: {e}", exc_info=True)
 
+    # 2. Try Binance
+    logger.info(f"CoinGecko failed, trying Binance for {token_symbol}")
+    binance_price = await _get_binance_price(token_symbol)
+    if binance_price:
+        return binance_price
+
+    # 3. Try CryptoCompare
+    logger.info(f"Binance failed, trying CryptoCompare for {token_symbol}")
+    cc_price = await _get_cryptocompare_price(token_symbol)
+    if cc_price:
+        return cc_price
+
+    logger.error(f"All price sources failed for {token_symbol}")
+    return f"Price data not found for {token_symbol}"
 
 @tool
 async def get_token_price(token_symbol: str) -> str:
