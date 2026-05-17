@@ -38,6 +38,7 @@ from app.bot.ui_formatters import (
     confirm_keyboard,
 )
 from app.wallet.gas import GasService
+from app.dca.handlers import try_handle_dca_message
 
 import asyncio
 import logging
@@ -603,6 +604,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = str(update.effective_user.id)
         send_sessions.pop(user_id, None)
         await safe_send(update, "❌ <b>Cancelled.</b>", keyboard=quick_actions_keyboard())
+        return
+
+    if await try_handle_dca_message(update, context, text):
         return
 
     match = SEND_PATTERN.search(text)

@@ -85,8 +85,6 @@ async def _show_dca_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def _handle_dca_create(update: Update, context: ContextTypes.DEFAULT_TYPE, command: str):
     """Handle /dca create <command>."""
-    user_id = str(update.effective_user.id)
-    
     if not command:
         await update.message.reply_text(
             "Usage: /dca create Send 10 dollars to 0x... every monday",
@@ -105,7 +103,7 @@ async def _handle_dca_create(update: Update, context: ContextTypes.DEFAULT_TYPE,
         return
     
     # Validate recipient address
-    if not await DCAParser.validate_address(parsed["recipient"]):
+    if not DCAParser.validate_address(parsed["recipient"]):
         await update.message.reply_text(
             f"❌ <b>Invalid recipient address:</b>\n{parsed['recipient']}",
             parse_mode=ParseMode.HTML
@@ -140,6 +138,17 @@ async def _handle_dca_create(update: Update, context: ContextTypes.DEFAULT_TYPE,
         parse_mode=ParseMode.HTML,
         reply_markup=keyboard
     )
+
+
+async def try_handle_dca_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> bool:
+    """Parse a plain chat message as a DCA request and handle it if valid."""
+    try:
+        parse_dca_command(text)
+    except DCAParseError:
+        return False
+
+    await _handle_dca_create(update, context, text)
+    return True
 
 
 async def dca_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):

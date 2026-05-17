@@ -135,8 +135,8 @@ class DCAParser:
     @staticmethod
     def _extract_amount(text: str) -> Optional[float]:
         """Extract dollar/token amount."""
-        # Pattern: number (with optional decimals)
-        pattern = r"send\s+([\d.]+)\s+(?:dollars?|usd|usdc?|eth|btc|matic|sol|ethereum|bitcoin|solana)"
+        # Pattern: optional dca/send prefix, then number and token
+        pattern = r"(?:dca\s+)?(?:send\s+)?([\d.]+)\s+(?:dollars?|usd|usdc?|eth|btc|matic|pol|sol|ethereum|bitcoin|solana|arb|op|celo)"
         match = re.search(pattern, text, re.IGNORECASE)
         
         if match:
@@ -155,7 +155,7 @@ class DCAParser:
     @staticmethod
     def _extract_token(text: str) -> Optional[str]:
         """Extract token symbol."""
-        pattern = r"(?:send\s+[\d.]+\s+)(\w+)"
+        pattern = r"(?:dca\s+)?(?:send\s+)?[\d.]+\s+(\w+)"
         match = re.search(pattern, text, re.IGNORECASE)
         
         if match:
