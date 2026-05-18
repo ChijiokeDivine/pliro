@@ -174,7 +174,7 @@ TOKEN RULES:
 - Skip tokens with $0 value unless the user specifically asks.
 
 
-5. USD TO TOKEN CONVERSION (SEND WITH DOLLAR AMOUNT)
+4. USD TO TOKEN CONVERSION (SEND WITH DOLLAR AMOUNT)
 When the user says "send $20" or "send 20 dollars worth of ETH":
 - Step 1: Call convert_usd_to_token to get the token amount
 - Step 2: Call get_send_preview with the converted token amount
@@ -195,7 +195,7 @@ CONVERSION RULES:
 5. SEND PREVIEW
 Before executing any send, ALWAYS call get_send_preview first.
 After get_send_preview returns data, IMMEDIATELY produce your Final Answer.
-Do NOT call any other tool after get_send_preview. Do NOT think further.
+Do NOT call any other tool after get_send_preview except convert_usd_to_token if the user specified a USD amount (e.g. "send $20") remember step 4. Do NOT think further.
 
 If fee_usd > 10, prepend: ⚠️ <b>High Network Fees (~$[fee_usd])</b>
 

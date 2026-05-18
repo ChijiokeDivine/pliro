@@ -123,7 +123,7 @@ async def _handle_dca_create(update: Update, context: ContextTypes.DEFAULT_TYPE,
     # Create confirmation buttons
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("✅ Confirm", callback_data=f"dca_confirm:{command}"),
+            InlineKeyboardButton("✅ Confirm", callback_data="dca_confirm_creation"),
             InlineKeyboardButton("❌ Cancel", callback_data="dca_cancel_creation"),
         ]
     ])
@@ -158,11 +158,11 @@ async def dca_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await query.answer()
     
-    if query.data.startswith("dca_confirm:"):
-        command = query.data.replace("dca_confirm:", "")
-        await _confirm_dca_creation(update, context, user_id, command)
+    if query.data == "dca_confirm_creation":
+        await _confirm_dca_creation(update, context, user_id)
     
     elif query.data == "dca_cancel_creation":
+        context.user_data.pop("dca_creation", None)
         await query.edit_message_text("❌ <b>Creation cancelled.</b>", parse_mode=ParseMode.HTML)
 
     elif query.data == "dca_list":
@@ -207,11 +207,20 @@ async def dca_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("Unsupported DCA action.", show_alert=False)
 
 
-async def _confirm_dca_creation(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: str, command: str):
+async def _confirm_dca_creation(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: str):
     """Confirm and create DCA."""
     query = update.callback_query
     
     try:
+        creation_data = context.user_data.get("dca_creation")
+        if not creation_data or not creation_data.get("original_command"):
+            await query.edit_message_text(
+                "❌ <b>DCA confirmation expired.</b>\nPlease send the recurring request again.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        command = creation_data["original_command"]
         parsed = parse_dca_command(command)
         next_exec = DCAParser.calculate_next_execution(parsed["interval"])
         
@@ -235,6 +244,8 @@ async def _confirm_dca_creation(update: Update, context: ContextTypes.DEFAULT_TY
             # Schedule the job
             scheduler = await get_dca_scheduler()
             await scheduler.schedule_job(payment)
+
+        context.user_data.pop("dca_creation", None)
         
         success_text = (
             f"✅ <b>DCA Created!</b>\n\n"
