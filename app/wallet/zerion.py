@@ -23,6 +23,58 @@ class ZerionClient:
         self._gas_cache = {}
         self._cache_ttl = 30  # 30 seconds
 
+    def _normalize_gas_info(self, gas_type: str, info: dict) -> dict:
+        """Normalize Zerion gas formats into a stable shape for app consumers."""
+        gas_type = (gas_type or "").lower()
+
+        if gas_type == "eip1559":
+            return {
+                "gas_type": gas_type,
+                "base_fee": int(info.get("base_fee") or 0),
+                "slow": int((info.get("slow") or {}).get("max_fee") or 0),
+                "standard": int((info.get("standard") or {}).get("max_fee") or 0),
+                "fast": int((info.get("fast") or {}).get("max_fee") or 0),
+                "rapid": int((info.get("rapid") or {}).get("max_fee") or 0),
+            }
+
+        if gas_type == "optimistic":
+            l2_gas_price = int(info.get("l2") or 0)
+            return {
+                "gas_type": gas_type,
+                "l1": int(info.get("l1") or 0),
+                "l2": l2_gas_price,
+                "fixed_overhead": int(info.get("fixed_overhead") or 0),
+                "dynamic_overhead": int(info.get("dynamic_overhead") or 0),
+                # Keep the same speed keys so existing callers can still read values.
+                "slow": l2_gas_price,
+                "standard": l2_gas_price,
+                "fast": l2_gas_price,
+                "rapid": l2_gas_price,
+            }
+
+        return {
+            "gas_type": "classic",
+            "slow": int(info.get("slow") or 0),
+            "standard": int(info.get("standard") or 0),
+            "fast": int(info.get("fast") or 0),
+            "rapid": int(info.get("rapid") or 0),
+        }
+
+    def _select_preferred_gas_info(self, chain_id: str, gas_options: list[dict]) -> dict:
+        """Pick the most useful gas payload when Zerion returns multiple gas types."""
+        if not gas_options:
+            return {}
+
+        if chain_id == "optimism":
+            priority = {"optimistic": 0, "eip1559": 1, "classic": 2}
+        else:
+            priority = {"eip1559": 0, "classic": 1, "optimistic": 2}
+
+        return sorted(
+            gas_options,
+            key=lambda item: priority.get(item.get("gas_type", "classic"), 99),
+        )[0]
+
     async def get_portfolio(self, address: str) -> dict:
         url = f"{self.base_url}/v1/wallets/{address}/portfolio"
 
@@ -158,10 +210,84 @@ class ZerionClient:
                 
             return offers
 
+    async def get_swap_quotes(
+        self,
+        from_address: str,
+        to_address: str,
+        input_fungible_id: str,
+        output_fungible_id: str,
+        amount: str,
+        input_chain_id: str = "ethereum",
+        output_chain_id: str | None = None,
+        currency: str = "usd",
+    ) -> list:
+        """
+        Fetch swap quotes from Zerion's quotes endpoint.
+        Amount must be a human-readable decimal string, not wei.
+        """
+        url = f"{self.base_url}/v1/swap/quotes/"
+        params = {
+            "currency": currency,
+            "from": from_address,
+            "to": to_address,
+            "input[chain_id]": input_chain_id,
+            "input[fungible_id]": input_fungible_id,
+            "input[amount]": amount,
+            "output[fungible_id]": output_fungible_id,
+        }
+        if output_chain_id:
+            params["output[chain_id]"] = output_chain_id
+
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            logger.info(
+                "Fetching swap quotes: %s %s on %s -> %s on %s",
+                amount,
+                input_fungible_id,
+                input_chain_id,
+                output_fungible_id,
+                output_chain_id or input_chain_id,
+            )
+            response = await client.get(url, params=params, headers=self.headers, timeout=20.0)
+
+            if response.status_code != 200:
+                logger.error(f"Zerion get_swap_quotes error: {response.status_code} - {response.text}")
+                response.raise_for_status()
+
+            data = response.json()
+            quotes = []
+
+            for item in data.get("data", []):
+                attr = item.get("attributes", {})
+                relationships = item.get("relationships", {})
+                quotes.append({
+                    "id": item.get("id"),
+                    "liquidity_source": attr.get("liquidity_source", {}),
+                    "input_amount": attr.get("input_amount", {}),
+                    "output_amount": attr.get("output_amount", {}),
+                    "minimum_output_amount": attr.get("minimum_output_amount", {}),
+                    "output_amount_after_fees": attr.get("output_amount_after_fees", {}),
+                    "slippage_percent": attr.get("slippage_percent"),
+                    "rate": attr.get("rate", []),
+                    "protocol_fee": attr.get("protocol_fee"),
+                    "bridge_fee": attr.get("bridge_fee"),
+                    "network_fee": attr.get("network_fee"),
+                    "transaction_approve": attr.get("transaction_approve"),
+                    "transaction_swap": attr.get("transaction_swap"),
+                    "error": attr.get("error"),
+                    "estimated_time_seconds": attr.get("estimated_time_seconds"),
+                    "input_chain": relationships.get("input_chain", {}).get("data", {}),
+                    "output_chain": relationships.get("output_chain", {}).get("data", {}),
+                    "input_fungible": relationships.get("input_fungible", {}).get("data", {}),
+                    "output_fungible": relationships.get("output_fungible", {}).get("data", {}),
+                })
+
+            return quotes
+
     async def get_gas_prices(self, chain_id: str = "ethereum") -> dict:
         """
         Fetches gas prices from Zerion with caching.
         """
+        chain_id = (chain_id or "ethereum").strip().lower()
         now = time.time()
         if chain_id in self._gas_cache:
             ts, data = self._gas_cache[chain_id]
@@ -171,7 +297,7 @@ class ZerionClient:
         url = f"{self.base_url}/v1/gas-prices/"
         params = {
             "filter[chain_ids]": chain_id,
-            "filter[gas_types]": "classic,eip1559"
+            "filter[gas_types]": "classic,eip1559,optimistic"
         }
         
         async with httpx.AsyncClient(follow_redirects=True) as client:
@@ -184,14 +310,20 @@ class ZerionClient:
                 return {}
                 
             data = response.json()
-            # Usually returns a list, pick the first one matching the chain
-            gas_info = {}
+            gas_options = []
             for item in data.get("data", []):
                 attr = item.get("attributes", {})
-                gas_info = attr.get("info", {})
-                if gas_info:
-                    break
+                relationships = item.get("relationships", {})
+                item_chain_id = relationships.get("chain", {}).get("data", {}).get("id")
+                if item_chain_id and item_chain_id != chain_id:
+                    continue
+
+                info = attr.get("info") or {}
+                gas_type = attr.get("gas_type")
+                if info:
+                    gas_options.append(self._normalize_gas_info(gas_type, info))
             
+            gas_info = self._select_preferred_gas_info(chain_id, gas_options)
             self._gas_cache[chain_id] = (now, gas_info)
             return gas_info
 

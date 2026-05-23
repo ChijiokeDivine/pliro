@@ -20,36 +20,60 @@ CHAIN_NATIVE_TOKENS = {
     "celo": "celo",
 }
 
+CHAIN_ALIASES = {
+    "evm": "ethereum",
+    "mainnet": "ethereum",
+    "eth": "ethereum",
+    "bnb chain": "bnb",
+    "binance": "bnb",
+    "binance smart chain": "bnb",
+    "matic": "polygon",
+}
+
 class GasService:
     def __init__(self, zerion_client: ZerionClient):
         self.zerion = zerion_client
+
+    def _normalize_chain_id(self, chain_id: str) -> str:
+        normalized = (chain_id or "ethereum").strip().lower()
+        return CHAIN_ALIASES.get(normalized, normalized)
+
+    def _estimate_fee_wei(self, gas_data: dict, speed: str, gas_limit: int) -> int:
+        gas_type = gas_data.get("gas_type", "classic")
+
+        if gas_type == "optimistic":
+            l1_cost = int(gas_data.get("l1") or 0)
+            l2_gas_price = int(gas_data.get("l2") or gas_data.get("standard") or 0)
+            return l1_cost + (gas_limit * l2_gas_price)
+
+        gas_price_wei = int(gas_data.get(speed) or gas_data.get("standard") or 0)
+        return gas_limit * gas_price_wei
 
     async def estimate_fee_usd(self, chain_id: str, action: str = "send", gas_limit: int = None) -> dict:
         """
         Estimates the network fee in USD for a given chain and action.
         Returns a dict with 'slow', 'standard', 'fast' USD estimates.
         """
+        chain_id = self._normalize_chain_id(chain_id)
         if gas_limit is None:
             gas_limit = DEFAULT_GAS_LIMITS.get(action, 21000)
 
-        # 1. Get gas prices in wei
+        # 1. Get normalized gas data from Zerion
         gas_prices = await self.zerion.get_gas_prices(chain_id)
         if not gas_prices:
             return {"standard": 0.0, "slow": 0.0, "fast": 0.0}
 
         # 2. Get native token price
         token_id = CHAIN_NATIVE_TOKENS.get(chain_id, "eth")
-        token_price = await self.zerion.get_token_price(token_id)
+        token_price = float(await self.zerion.get_token_price(token_id) or 0.0)
+        if token_price <= 0:
+            logger.warning("Missing token price for chain %s (token %s)", chain_id, token_id)
+            return {"standard": 0.0, "slow": 0.0, "fast": 0.0}
 
         estimates = {}
         for speed in ["slow", "standard", "fast"]:
-            wei_price = gas_prices.get(speed)
-            if wei_price is None:
-                # Fallback to standard if others are null
-                wei_price = gas_prices.get("standard", 0)
-            
-            # fee = gas_limit * gas_price (in wei) / 1e18 (to get eth) * token_price
-            fee_eth = (gas_limit * wei_price) / 1e18
+            fee_wei = self._estimate_fee_wei(gas_prices, speed, gas_limit)
+            fee_eth = fee_wei / 1e18
             fee_usd = fee_eth * token_price
             estimates[speed] = fee_usd
 
@@ -63,23 +87,30 @@ class GasService:
         Returns a dictionary of gas prices in USD for slow, standard, and fast speeds.
         Used for the /gas menu.
         """
+        chain_id = self._normalize_chain_id(chain_id)
         # We'll use a standard gas limit of 21000 for simple display
         estimates = await self.estimate_fee_usd(chain_id, action="send", gas_limit=21000)
         
         # We also want the Gwei values for the UI formatter if we keep it
         raw_gas_prices = await self.zerion.get_gas_prices(chain_id)
+        gas_type = raw_gas_prices.get("gas_type", "classic")
+
+        def _display_gwei(speed: str) -> float:
+            if gas_type == "optimistic":
+                return (raw_gas_prices.get("l2", 0) / 1e9) if raw_gas_prices.get("l2") else 0
+            return (raw_gas_prices.get(speed, 0) / 1e9) if raw_gas_prices.get(speed) else 0
         
         return {
             "slow": {
                 "usd": estimates.get("slow", 0.0),
-                "gwei": (raw_gas_prices.get("slow", 0) / 1e9) if raw_gas_prices.get("slow") else 0
+                "gwei": _display_gwei("slow")
             },
             "standard": {
                 "usd": estimates.get("standard", 0.0),
-                "gwei": (raw_gas_prices.get("standard", 0) / 1e9) if raw_gas_prices.get("standard") else 0
+                "gwei": _display_gwei("standard")
             },
             "fast": {
                 "usd": estimates.get("fast", 0.0),
-                "gwei": (raw_gas_prices.get("fast", 0) / 1e9) if raw_gas_prices.get("fast") else 0
+                "gwei": _display_gwei("fast")
             }
         }

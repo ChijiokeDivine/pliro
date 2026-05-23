@@ -3,7 +3,7 @@ from langchain.agents import create_react_agent, AgentExecutor
 from app.config import settings
 from langchain_core.prompts import PromptTemplate
 from langchain.callbacks.base import AsyncCallbackHandler
-from typing import Any, Dict, List
+from typing import Any, Dict
 import logging
 
 from app.tools.wallet_tools import (
@@ -12,6 +12,7 @@ from app.tools.wallet_tools import (
     get_portfolio_summary,
     get_token_positions,
     get_transaction_history,
+    get_swap_quote,
     send_crypto,
     get_send_preview,
     get_token_price,
@@ -43,6 +44,7 @@ class TelegramStatusCallback(AsyncCallbackHandler):
             "get_portfolio_summary": "⏳ Calculating portfolio value...",
             "get_token_positions": "⏳ Fetching token balances...",
             "get_transaction_history": "⏳ Retrieving transaction history...",
+            "get_swap_quote": "⏳ Finding the best swap route...",
             "send_crypto": "⏳ Preparing transaction...",
             "get_send_preview": "⏳ Estimating network fees..."
         }
@@ -63,6 +65,7 @@ tools = [
     get_portfolio_summary,
     get_token_positions,
     get_transaction_history,
+    get_swap_quote,
     send_crypto,
     get_send_preview,
     get_token_price,
@@ -235,8 +238,10 @@ TRANSACTION RULES:
 
 
 7. SWAP
-If the user asks to swap tokens, tell them to use the /swap command.
-Do not attempt to handle swaps yourself.
+When the user asks to swap or bridge tokens, call get_swap_quote first.
+Input MUST be a JSON string with: telegram_user_id, input_token, output_token, amount, optional input_chain, output_chain, to_address.
+Show the best quote only: route, expected output, minimum received, fees/slippage, and any approval or balance issue.
+Never invent quotes or execute the swap yourself. If the user wants to proceed, tell them to use /swap.
 
 
 8. DCA (DOLLAR COST AVERAGING)

@@ -28,6 +28,19 @@ def extract_user_id(val: str) -> int:
     
     return int(val_str)
 
+
+def _get_wallet_address_for_chain(wallet, chain_id: str) -> str:
+    """Return the correct wallet address for the requested chain family."""
+    normalized_chain = (chain_id or "ethereum").strip().lower()
+    if normalized_chain == "solana":
+        if not wallet.solana_address:
+            raise ValueError("No Solana wallet found.")
+        return wallet.solana_address
+
+    if not wallet.evm_address:
+        raise ValueError("No EVM wallet found.")
+    return wallet.evm_address
+
 @tool
 async def get_or_create_wallet(telegram_user_id: str) -> str:
     """
@@ -185,6 +198,97 @@ async def get_transaction_history(telegram_user_id: str) -> str:
             lines.append(f"{date} | {type_.capitalize()} | Status: {tx['status']}")
             
         return "\n".join(lines)
+
+
+@tool
+async def get_swap_quote(input_json: str) -> str:
+    """
+    Fetches the best swap or bridge quote from Zerion.
+    Input MUST be a JSON string with keys: telegram_user_id, input_token, output_token, amount.
+    Optional: input_chain (default 'ethereum'), output_chain (defaults to input_chain), to_address, currency (default 'usd').
+    Example: {"telegram_user_id": "6034765096", "input_token": "eth", "output_token": "usdc", "amount": "0.05", "input_chain": "base"}
+    """
+    try:
+        data = json.loads(input_json)
+        telegram_user_id = data["telegram_user_id"]
+        user_id_int = extract_user_id(telegram_user_id)
+        input_token = str(data["input_token"]).strip()
+        output_token = str(data["output_token"]).strip()
+        amount = str(data["amount"]).strip()
+        input_chain = str(data.get("input_chain", "ethereum")).strip().lower()
+        output_chain = str(data.get("output_chain", input_chain)).strip().lower()
+        currency = str(data.get("currency", "usd")).strip().lower()
+    except Exception as e:
+        return f"Error parsing input: {str(e)}"
+
+    if not input_token or not output_token or not amount:
+        return "Error: input_token, output_token, and amount are required."
+
+    async with async_session_factory() as session:
+        user = await crud.get_or_create_user(session, user_id_int)
+        wallet = await crud.get_user_wallet(session, user.id)
+
+        if not wallet:
+            return "No wallet found."
+
+        try:
+            from_address = _get_wallet_address_for_chain(wallet, input_chain)
+            to_address = str(data.get("to_address") or _get_wallet_address_for_chain(wallet, output_chain)).strip()
+        except Exception as e:
+            return f"Error: {str(e)}"
+
+        try:
+            quotes = await zerion_client.get_swap_quotes(
+                from_address=from_address,
+                to_address=to_address,
+                input_fungible_id=input_token,
+                output_fungible_id=output_token,
+                amount=amount,
+                input_chain_id=input_chain,
+                output_chain_id=output_chain,
+                currency=currency,
+            )
+        except Exception as e:
+            logger.error(f"Failed to fetch swap quote: {e}", exc_info=True)
+            return f"Error fetching swap quote: {str(e)}"
+
+        if not quotes:
+            return "No swap quotes found."
+
+        def _quote_summary(quote: dict) -> dict:
+            error = quote.get("error") or {}
+            return {
+                "id": quote.get("id"),
+                "liquidity_source": quote.get("liquidity_source", {}),
+                "input_amount": quote.get("input_amount", {}),
+                "output_amount": quote.get("output_amount", {}),
+                "minimum_output_amount": quote.get("minimum_output_amount", {}),
+                "output_amount_after_fees": quote.get("output_amount_after_fees", {}),
+                "slippage_percent": quote.get("slippage_percent"),
+                "estimated_time_seconds": quote.get("estimated_time_seconds"),
+                "approval_required": bool(quote.get("transaction_approve")),
+                "executable": bool(quote.get("transaction_swap")) and not error,
+                "error": error or None,
+            }
+
+        result = {
+            "type": "swap_quote",
+            "request": {
+                "from": from_address,
+                "to": to_address,
+                "input_chain": input_chain,
+                "output_chain": output_chain,
+                "input_token": input_token,
+                "output_token": output_token,
+                "amount": amount,
+                "currency": currency,
+            },
+            "quote_count": len(quotes),
+            "best_quote": _quote_summary(quotes[0]),
+            "top_quotes": [_quote_summary(quote) for quote in quotes[:3]],
+        }
+
+        return json.dumps(result)
 
 @tool
 async def get_send_preview(input_json: str) -> str:
