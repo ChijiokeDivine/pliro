@@ -9,12 +9,16 @@ import logging
 import json
 import aiohttp
 import asyncio
+import re
 
 logger = logging.getLogger(__name__)
 
 privy_client = PrivyClient()
 zerion_client = ZerionClient()
 gas_service = GasService(zerion_client)
+
+EVM_ADDRESS_PATTERN = re.compile(r"^0x[a-fA-F0-9]{40}$")
+SOLANA_ADDRESS_PATTERN = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
 
 def extract_user_id(val: str) -> int:
     """Helper to extract and validate telegram_user_id from agent input."""
@@ -40,6 +44,47 @@ def _get_wallet_address_for_chain(wallet, chain_id: str) -> str:
     if not wallet.evm_address:
         raise ValueError("No EVM wallet found.")
     return wallet.evm_address
+
+
+def _clean_contact_target(value: str | None) -> str:
+    return str(value or "").strip().strip('"').strip("'")
+
+
+def _is_probable_wallet_address(value: str) -> bool:
+    candidate = _clean_contact_target(value)
+    return bool(EVM_ADDRESS_PATTERN.match(candidate) or SOLANA_ADDRESS_PATTERN.match(candidate))
+
+
+def _is_valid_address_for_chain(address: str, chain: str) -> bool:
+    normalized_chain = crud.normalize_chain_name(chain)
+    if normalized_chain == "solana":
+        return bool(SOLANA_ADDRESS_PATTERN.match(address))
+    return bool(EVM_ADDRESS_PATTERN.match(address))
+
+
+async def _resolve_contact_or_address(session, user_id, target: str, chain: str | None = None) -> dict | None:
+    cleaned_target = _clean_contact_target(target)
+    if not cleaned_target:
+        return None
+
+    resolved = await crud.resolve_contact_target(session, user_id, cleaned_target, chain)
+    if resolved:
+        return {
+            "address": resolved["address"],
+            "chain": resolved["chain"],
+            "contact_name": resolved["name"],
+            "resolved_from": resolved["resolved_from"],
+        }
+
+    if _is_probable_wallet_address(cleaned_target):
+        return {
+            "address": cleaned_target,
+            "chain": crud.normalize_chain_name(chain),
+            "contact_name": None,
+            "resolved_from": "raw_address",
+        }
+
+    return None
 
 @tool
 async def get_or_create_wallet(telegram_user_id: str) -> str:
@@ -94,6 +139,76 @@ async def get_wallet_addresses(telegram_user_id: str) -> str:
             return "No wallet found. Please create one first."
             
         return f"EVM: {wallet.evm_address}\nSolana: {wallet.solana_address}"
+
+
+@tool
+async def create_contact(input_json: str) -> str:
+    """
+    Creates or updates a saved contact.
+    Input MUST be a JSON string with keys: telegram_user_id, name, chain, wallet_address.
+    Example: {"telegram_user_id": "6034765096", "name": "George Bush", "chain": "ETH", "wallet_address": "0x..."}
+    """
+    try:
+        data = json.loads(input_json)
+        telegram_user_id = data["telegram_user_id"]
+        user_id_int = extract_user_id(telegram_user_id)
+        name = str(data["name"]).strip()
+        chain = crud.normalize_chain_name(data["chain"])
+        wallet_address = _clean_contact_target(data["wallet_address"])
+    except Exception as e:
+        return f"Error parsing input: {str(e)}"
+
+    if not name:
+        return "Error: Contact name is required."
+
+    if not _is_valid_address_for_chain(wallet_address, chain):
+        return f"Error: Invalid wallet address for {chain}."
+
+    async with async_session_factory() as session:
+        async with session.begin():
+            user = await crud.get_or_create_user(session, user_id_int)
+            contact = await crud.upsert_contact(
+                session,
+                user_id=user.id,
+                name=name,
+                chain=chain,
+                wallet_address=wallet_address,
+            )
+
+        return json.dumps(
+            {
+                "name": contact.name,
+                "chain": contact.chain,
+                "wallet_address": contact.wallet_address,
+            }
+        )
+
+
+@tool
+async def list_contacts(telegram_user_id: str) -> str:
+    """
+    Lists the user's saved contacts.
+    Required: telegram_user_id (the numeric ID from context).
+    """
+    try:
+        user_id_int = extract_user_id(telegram_user_id)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+    async with async_session_factory() as session:
+        user = await crud.get_or_create_user(session, user_id_int)
+        contacts = await crud.list_user_contacts(session, user.id)
+
+        return json.dumps(
+            [
+                {
+                    "name": contact.name,
+                    "chain": contact.chain,
+                    "wallet_address": contact.wallet_address,
+                }
+                for contact in contacts
+            ]
+        )
 
 @tool
 async def get_portfolio_summary(telegram_user_id: str) -> str:
@@ -294,21 +409,34 @@ async def get_swap_quote(input_json: str) -> str:
 async def get_send_preview(input_json: str) -> str:
     """
     Generates a send preview with gas estimates.
-    Input MUST be a JSON string with keys: telegram_user_id, to_address, amount, token, chain.
+    Input MUST be a JSON string with keys: telegram_user_id, amount, token.
+    Use either to_address or recipient for the destination, and optionally chain.
     Example: {"telegram_user_id": "6034765096", "to_address": "0x...", "amount": "0.1", "token": "ETH", "chain": "ethereum"}
+    Example: {"telegram_user_id": "6034765096", "recipient": "George Bush", "amount": "0.1", "token": "ETH"}
     """
     try:
         data = json.loads(input_json)
         telegram_user_id = data["telegram_user_id"]
         user_id_int = extract_user_id(telegram_user_id)
-        to_address = data["to_address"]
+        target = data.get("to_address") or data.get("recipient")
         amount = data["amount"]
         token = data["token"]
-        chain = data.get("chain", "ethereum")
+        chain = data.get("chain")
     except Exception as e:
         return f"Error parsing input: {str(e)}"
 
-    gas_estimates = await gas_service.estimate_fee_usd(chain_id=chain, action="send")
+    if not target:
+        return "Error: Missing destination. Provide to_address or recipient."
+
+    async with async_session_factory() as session:
+        user = await crud.get_or_create_user(session, user_id_int)
+        resolved = await _resolve_contact_or_address(session, user.id, target, chain)
+
+    if not resolved:
+        return f"Error: Contact or wallet not found for '{target}'."
+
+    resolved_chain = resolved["chain"] or "ethereum"
+    gas_estimates = await gas_service.estimate_fee_usd(chain_id=resolved_chain, action="send")
     # Unwrap if it returned a dict
     if isinstance(gas_estimates, dict):
         fee_usd = float(gas_estimates.get("standard") or gas_estimates.get("low") or 0.0)
@@ -319,12 +447,13 @@ async def get_send_preview(input_json: str) -> str:
     # OR the agent can just ask for confirmation.
     
     preview_data = {
-        "to": to_address,
+        "to": resolved["address"],
         "amount": amount,
         "token": token,
         "fee_usd": fee_usd,
-        "chain": chain,
-        "high_gas": fee_usd > 10
+        "chain": resolved_chain,
+        "high_gas": fee_usd > 10,
+        "contact_name": resolved["contact_name"],
     }
     
     return json.dumps(preview_data)
@@ -333,19 +462,23 @@ async def get_send_preview(input_json: str) -> str:
 async def send_crypto(input_json: str) -> str:
     """
     Sends crypto to another address.
-    Input MUST be a JSON string with keys: telegram_user_id, to_address, amount, chain, gas_speed (optional, default 'standard').
+    Input MUST be a JSON string with keys: telegram_user_id, amount.
+    Use either to_address or recipient for the destination, and optionally chain.
     Example: {"telegram_user_id": "6034765096", "to_address": "0x...", "amount": "0.01", "chain": "ethereum"}
+    Example: {"telegram_user_id": "6034765096", "recipient": "Daniel", "amount": "0.01", "chain": "ethereum"}
     """
     try:
         data = json.loads(input_json)
         telegram_user_id = data["telegram_user_id"]
         user_id_int = extract_user_id(telegram_user_id)
-        to_address = data["to_address"]
+        target = data.get("to_address") or data.get("recipient")
         amount = data["amount"]
-        chain = data.get("chain", "ethereum")
-        gas_speed = data.get("gas_speed", "standard")
+        chain = data.get("chain")
     except Exception as e:
         return f"Error parsing input: {str(e)}"
+
+    if not target:
+        return "Error: Missing destination. Provide to_address or recipient."
 
     async with async_session_factory() as session:
         user = await crud.get_or_create_user(session, user_id_int)
@@ -354,29 +487,28 @@ async def send_crypto(input_json: str) -> str:
         if not wallet:
             return "No wallet found."
 
-        if chain.lower() in ("ethereum", "evm", "base", "polygon", "bnb", "arbitrum", "optimism"):
-            # Get gas price for selected speed
-            gas_prices = await zerion_client.get_gas_prices(chain.lower() if chain.lower() != "evm" else "ethereum")
-            gas_price = gas_prices.get(gas_speed, gas_prices.get("standard", 0))
-            
+        resolved = await _resolve_contact_or_address(session, user.id, target, chain)
+        if not resolved:
+            return f"Error: Contact or wallet not found for '{target}'."
+
+        to_address = resolved["address"]
+        resolved_chain = resolved["chain"] or "ethereum"
+
+        if resolved_chain.lower() in ("ethereum", "evm", "base", "polygon", "bnb", "arbitrum", "optimism", "celo"):
             wei = int(float(amount) * 10**18)
             value_hex = hex(wei)
-            gas_price_hex = hex(gas_price) if gas_price else None
             
             tx_hash = await privy_client.send_evm_transaction(
                 wallet_id=wallet.privy_evm_wallet_id,
                 to_address=to_address,
                 value_hex=value_hex,
-                chain=chain,
-                gas_hex=hex(21000), # Standard send gas limit
-                # Note: We can add gasPrice to Privy payload if needed, 
-                # but standard EIP-1559 might be handled by Privy internally.
+                chain=resolved_chain,
             )
             return f"Transaction sent! Hash: {tx_hash}"
-        elif chain.lower() == "solana":
+        elif resolved_chain.lower() == "solana":
             return "Solana sending is not fully implemented yet."
         else:
-            return f"Unsupported chain: {chain}"
+            return f"Unsupported chain: {resolved_chain}"
 
 
 # ─── PRICE CONVERSION TOOLS ────────────────────────────────────────────────
@@ -583,26 +715,29 @@ async def list_dca_payments(telegram_user_id: str) -> str:
         from app.dca.crud import DCAOperations
         
         async with async_session_factory() as session:
+            user = await crud.get_or_create_user(session, user_id_int)
             payments = await DCAOperations.list_user_recurring_payments(session, user_id)
-        
-        if not payments:
-            return "No recurring payments found. Create one with /dca create"
-        
-        lines = ["💰 Your Recurring Payments:\n"]
-        for payment in payments:
-            status_icon = "✅" if payment.status == "active" else "⏸"
-            next_exec = payment.next_execution_at.strftime("%Y-%m-%d %H:%M UTC") if payment.next_execution_at else "N/A"
-            
-            lines.append(
-                f"{status_icon} Payment #{payment.id}\n"
-                f"  Amount: ${payment.amount} {payment.token_symbol}\n"
-                f"  To: {payment.recipient_address[:20]}...\n"
-                f"  Schedule: Every {payment.recurrence_type}\n"
-                f"  Next: {next_exec}\n"
-                f"  Status: {payment.status}\n"
-            )
-        
-        return "\n".join(lines)
+
+            if not payments:
+                return "No recurring payments found. Create one with /dca create"
+
+            lines = ["💰 Your Recurring Payments:\n"]
+            for payment in payments:
+                status_icon = "✅" if payment.status == "active" else "⏸"
+                next_exec = payment.next_execution_at.strftime("%Y-%m-%d %H:%M UTC") if payment.next_execution_at else "N/A"
+                contact = await crud.get_contact_by_address(session, user.id, payment.recipient_address, payment.chain)
+                recipient_label = contact.name if contact else f"{payment.recipient_address[:20]}..."
+
+                lines.append(
+                    f"{status_icon} Payment #{payment.id}\n"
+                    f"  Amount: ${payment.amount} {payment.token_symbol}\n"
+                    f"  To: {recipient_label}\n"
+                    f"  Schedule: Every {payment.recurrence_type}\n"
+                    f"  Next: {next_exec}\n"
+                    f"  Status: {payment.status}\n"
+                )
+
+            return "\n".join(lines)
     
     except Exception as e:
         logger.error(f"Failed to list DCA payments: {e}", exc_info=True)
@@ -614,6 +749,7 @@ async def create_dca_payment(input_json: str) -> str:
     """
     Creates a new recurring payment (DCA).
     Input MUST be a JSON string with keys: telegram_user_id, recipient_address, amount, token_symbol, interval.
+    The recipient_address field may be a raw wallet address or a saved contact name.
     Optional: chain (default 'ethereum'), description.
     Example: {"telegram_user_id": "6034765096", "recipient_address": "0x...", "amount": 10, "token_symbol": "USDC", "interval": "daily"}
     Supported intervals: hourly, daily, weekly, monthly, or specific weekdays (monday-sunday).
@@ -623,12 +759,12 @@ async def create_dca_payment(input_json: str) -> str:
         telegram_user_id = data["telegram_user_id"]
         user_id_int = extract_user_id(telegram_user_id)
         user_id = str(user_id_int)
-        recipient = data["recipient_address"]
+        recipient = str(data["recipient_address"]).strip()
         amount = float(data["amount"])
         token_symbol = data["token_symbol"]
         interval = data["interval"]
-        chain = data.get("chain", "ethereum")
-        description = data.get("description", f"DCA: ${amount} {token_symbol} every {interval}")
+        chain = data.get("chain")
+        description = data.get("description")
     except Exception as e:
         return f"Error parsing input: {str(e)}"
 
@@ -637,22 +773,33 @@ async def create_dca_payment(input_json: str) -> str:
         from app.dca.crud import DCAOperations
         from app.dca.scheduler import get_dca_scheduler
         
-        # Validate recipient address (not async)
-        if not DCAParser.validate_address(recipient):
-            return f"Invalid recipient address: {recipient}"
-        
         # Calculate next execution time and cron expression
         next_exec = DCAParser.calculate_next_execution(interval)
         cron_expr = DCAParser.get_cron_expression(interval)
         
         async with async_session_factory() as session:
+            user = await crud.get_or_create_user(session, user_id_int)
+            resolved = await _resolve_contact_or_address(session, user.id, recipient, chain)
+            if not resolved:
+                return f"Contact or wallet not found for '{recipient}'."
+
+            recipient_address = resolved["address"]
+            resolved_chain = resolved["chain"] or "ethereum"
+            if not _is_valid_address_for_chain(recipient_address, resolved_chain):
+                return f"Invalid recipient address: {recipient_address}"
+
+            if not description:
+                description = f"DCA: ${amount} {token_symbol} every {interval}"
+                if resolved["contact_name"]:
+                    description += f" to {resolved['contact_name']}"
+
             payment = await DCAOperations.create_recurring_payment(
                 session,
                 user_id=user_id,
-                recipient_address=recipient,
+                recipient_address=recipient_address,
                 amount=amount,
                 token_symbol=token_symbol,
-                chain=chain,
+                chain=resolved_chain,
                 recurrence_type=interval,
                 cron_expression=cron_expr,
                 next_execution_at=next_exec,
@@ -668,6 +815,7 @@ async def create_dca_payment(input_json: str) -> str:
             f"✅ DCA Created!\n"
             f"Payment ID: #{payment.id}\n"
             f"Amount: ${payment.amount} {payment.token_symbol}\n"
+            f"Recipient: {resolved['contact_name'] or payment.recipient_address}\n"
             f"Schedule: Every {payment.recurrence_type}\n"
             f"First execution: {payment.next_execution_at.strftime('%Y-%m-%d %H:%M UTC')}"
         )

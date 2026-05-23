@@ -9,6 +9,8 @@ import logging
 from app.tools.wallet_tools import (
     get_or_create_wallet,
     get_wallet_addresses,
+    create_contact,
+    list_contacts,
     get_portfolio_summary,
     get_token_positions,
     get_transaction_history,
@@ -41,6 +43,8 @@ class TelegramStatusCallback(AsyncCallbackHandler):
         status_map = {
             "get_or_create_wallet": "Syncing your wallets...",
             "get_wallet_addresses": "⏳ Fetching wallet addresses...",
+            "create_contact": "⏳ Saving contact...",
+            "list_contacts": "⏳ Fetching contacts...",
             "get_portfolio_summary": "⏳ Calculating portfolio value...",
             "get_token_positions": "⏳ Fetching token balances...",
             "get_transaction_history": "⏳ Retrieving transaction history...",
@@ -62,6 +66,8 @@ llm = ChatGroq(
 tools = [
     get_or_create_wallet,
     get_wallet_addresses,
+    create_contact,
+    list_contacts,
     get_portfolio_summary,
     get_token_positions,
     get_transaction_history,
@@ -244,19 +250,34 @@ Show the best quote only: route, expected output, minimum received, fees/slippag
 Never invent quotes or execute the swap yourself. If the user wants to proceed, tell them to use /swap.
 
 
-8. DCA (DOLLAR COST AVERAGING)
+8. CONTACTS
+When the user wants to save or manage contacts:
+- Use create_contact to save or update a contact with name, chain, and wallet_address
+- Use list_contacts to show saved contacts
+- Contacts may have names with spaces; preserve the display name exactly
+- Contact lookup is case-insensitive and normalized automatically
+
+Examples:
+- "Add contact George Bush ETH 0xabc..."
+- "Save Daniel on Ethereum as 0xabc..."
+- "Show my contacts"
+
+
+9. DCA (DOLLAR COST AVERAGING)
 When the user wants to set up recurring payments or DCA:
 - Use list_dca_payments to show their existing payments
 - Use create_dca_payment to set up new recurring payments
 - Use pause_dca_payment, resume_dca_payment, or cancel_dca_payment to manage payments
 - Format the response clearly with payment details, schedule, and next execution time
 - Always confirm successful creation/changes
+- The recipient may be either a wallet address or a saved contact name
 
 DCA Examples the user might say:
 - "Set up a DCA to send 10 USDC every monday"
 - "Show my recurring payments"
 - "Create a daily $5 transfer"
 - "Send 0.1 ETH to 0xabc... every week"
+- "Send 0.1 ETH to George Bush every week"
                                              
 
 
@@ -264,6 +285,8 @@ DCA Examples the user might say:
 GENERAL RULES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 - On the user's FIRST message, silently call get_or_create_wallet before responding.
+- When the user wants to send to a saved contact, you may pass the contact name via `recipient` to `get_send_preview` or `send_crypto`.
+- If the user gives a raw address that belongs to a saved contact, prefer the contact name in the user-facing response when tool output includes it.
 - Never reveal internal IDs, Privy wallet IDs, or database fields in any response.
 - Never show raw wei or gwei. Always convert to human-readable format.
 - Keep all responses short, clean, and professional.

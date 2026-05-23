@@ -1,9 +1,10 @@
 """
 parser.py - Natural language parser for DCA commands.
-Extracts amount, token, recipient, and recurrence interval deterministically.
+Extracts amount, token, recipient target, and recurrence interval deterministically.
 
 Supported commands:
 - Send 10 dollars to 0x... every monday
+- Send 10 dollars to George Bush every monday
 - Send 10 dollars to 0x... every week
 - Send 10 dollars to 0x... every month
 - Send 10 dollars to 0x... everyday
@@ -103,10 +104,10 @@ class DCAParser:
         if token is None:
             raise DCAParseError("Could not extract token/currency. Example: '...10 dollars...'")
         
-        # Extract recipient address
+        # Extract recipient target (wallet address or saved contact name)
         recipient = DCAParser._extract_recipient(text)
         if recipient is None:
-            raise DCAParseError("Could not extract recipient address. Example: '...to 0x123...'")
+            raise DCAParseError("Could not extract recipient. Example: '...to 0x123...' or '...to George Bush...'")
         
         # Extract recurrence interval
         interval = DCAParser._extract_interval(text)
@@ -168,14 +169,24 @@ class DCAParser:
     
     @staticmethod
     def _extract_recipient(text: str) -> Optional[str]:
-        """Extract recipient wallet address."""
-        # Pattern: 0x followed by 40 hex characters
-        pattern = r"(?:to\s+)?(?:\@)?(0x[a-fA-F0-9]{40})"
-        match = re.search(pattern, text, re.IGNORECASE)
-        
-        if match:
-            return match.group(1)
-        
+        """Extract recipient wallet address or saved contact name."""
+        address_pattern = r"(?:to\s+)?(?:\@)?(0x[a-fA-F0-9]{40})"
+        address_match = re.search(address_pattern, text, re.IGNORECASE)
+        if address_match:
+            return address_match.group(1)
+
+        contact_pattern = (
+            r"\bto\s+"
+            r"(?:\"([^\"]+)\"|'([^']+)'|([A-Za-z][A-Za-z\s'\-]{0,79}?))"
+            r"\s+(?=(?:every\s+\w+|everyday|hourly|daily|weekly|monthly|"
+            r"mondays?|tuesdays?|wednesdays?|thursdays?|fridays?|saturdays?|sundays?))"
+        )
+        contact_match = re.search(contact_pattern, text, re.IGNORECASE)
+        if contact_match:
+            for group in contact_match.groups():
+                if group:
+                    return group.strip()
+
         return None
     
     @staticmethod

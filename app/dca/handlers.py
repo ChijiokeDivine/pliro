@@ -10,6 +10,7 @@ from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
 
 from app.db.database import async_session_factory
+from app.db import crud
 from app.dca.parser import parse_dca_command, DCAParseError, DCAParser
 from app.dca.crud import DCAOperations
 from app.dca.scheduler import get_dca_scheduler
@@ -77,7 +78,8 @@ async def _show_dca_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "<b>Examples:</b>\n"
         "• Send 10 dollars to 0x50C5b228... every monday\n"
         "• Send 5 USDC to 0x50C5b228... every day\n"
-        "• Send 100 dollars to 0x50C5b228... every hour"
+        "• Send 100 dollars to 0x50C5b228... every hour\n"
+        "• Send 25 USDC to George Bush every friday"
     )
     
     await update.message.reply_text(help_text, parse_mode=ParseMode.HTML)
@@ -102,19 +104,32 @@ async def _handle_dca_create(update: Update, context: ContextTypes.DEFAULT_TYPE,
         )
         return
     
-    # Validate recipient address
-    if not DCAParser.validate_address(parsed["recipient"]):
+    recipient_label = parsed["recipient"]
+    recipient_address = None
+    recipient_chain = "ethereum"
+    async with async_session_factory() as session:
+        user = await crud.get_or_create_user(session, int(update.effective_user.id))
+        resolved = await crud.resolve_contact_target(session, user.id, parsed["recipient"])
+
+    if resolved:
+        recipient_label = resolved["name"]
+        recipient_address = resolved["address"]
+        recipient_chain = resolved["chain"]
+    elif DCAParser.validate_address(parsed["recipient"]):
+        recipient_address = parsed["recipient"]
+    else:
         await update.message.reply_text(
-            f"❌ <b>Invalid recipient address:</b>\n{parsed['recipient']}",
+            f"❌ <b>Unknown contact or invalid address:</b>\n{parsed['recipient']}",
             parse_mode=ParseMode.HTML
         )
         return
-    
+
     # Show confirmation
     confirmation_text = (
         f"<b>📋 DCA Confirmation</b>\n\n"
         f"<b>Amount:</b> ${parsed['amount']} {parsed['token']}\n"
-        f"<b>Recipient:</b> <code>{parsed['recipient']}</code>\n"
+        f"<b>Recipient:</b> {recipient_label}\n"
+        f"<b>Address:</b> <code>{recipient_address}</code>\n"
         f"<b>Schedule:</b> Every {parsed['interval']}\n"
         f"<b>Next execution:</b> {DCAParser.calculate_next_execution(parsed['interval']).strftime('%Y-%m-%d %H:%M UTC')}\n\n"
         f"Confirm to activate this recurring payment."
@@ -131,6 +146,9 @@ async def _handle_dca_create(update: Update, context: ContextTypes.DEFAULT_TYPE,
     context.user_data["dca_creation"] = {
         "parsed": parsed,
         "original_command": command,
+        "recipient_address": recipient_address,
+        "recipient_label": recipient_label,
+        "recipient_chain": recipient_chain,
     }
     
     await update.message.reply_text(
@@ -223,20 +241,23 @@ async def _confirm_dca_creation(update: Update, context: ContextTypes.DEFAULT_TY
         command = creation_data["original_command"]
         parsed = parse_dca_command(command)
         next_exec = DCAParser.calculate_next_execution(parsed["interval"])
+        recipient_address = creation_data.get("recipient_address") or parsed["recipient"]
+        recipient_label = creation_data.get("recipient_label") or parsed["recipient"]
+        recipient_chain = creation_data.get("recipient_chain") or "ethereum"
         
         async with async_session_factory() as session:
             # Create recurring payment
             payment = await DCAOperations.create_recurring_payment(
                 session,
                 user_id=user_id,
-                recipient_address=parsed["recipient"],
+                recipient_address=recipient_address,
                 amount=parsed["amount"],
                 token_symbol=parsed["token"],
-                chain="ethereum",  # Default to ethereum
+                chain=recipient_chain,
                 recurrence_type=parsed["interval"],
                 cron_expression=parsed["cron_expression"],
                 next_execution_at=next_exec,
-                description=f"DCA: ${parsed['amount']} {parsed['token']} every {parsed['interval']}",
+                description=f"DCA: ${parsed['amount']} {parsed['token']} every {parsed['interval']} to {recipient_label}",
             )
             
             await session.commit()
@@ -251,7 +272,8 @@ async def _confirm_dca_creation(update: Update, context: ContextTypes.DEFAULT_TY
             f"✅ <b>DCA Created!</b>\n\n"
             f"<b>Payment ID:</b> #{payment.id}\n"
             f"<b>Amount:</b> ${payment.amount} {payment.token_symbol}\n"
-            f"<b>Recipient:</b> <code>{payment.recipient_address[:20]}...</code>\n"
+            f"<b>Recipient:</b> {recipient_label}\n"
+            f"<b>Address:</b> <code>{payment.recipient_address[:20]}...</code>\n"
             f"<b>Schedule:</b> Every {payment.recurrence_type}\n"
             f"<b>First execution:</b> {payment.next_execution_at.strftime('%Y-%m-%d %H:%M UTC')}\n\n"
             f"You can pause, resume, or cancel this payment at any time."

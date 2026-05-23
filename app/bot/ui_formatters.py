@@ -65,6 +65,10 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("⛽ Gas Prices", callback_data="menu_gas"),
         ],
         [
+            InlineKeyboardButton("➕ Add Contact", callback_data="menu_add_contact"),
+            InlineKeyboardButton("👥 Contacts", callback_data="menu_contacts"),
+        ],
+        [
             InlineKeyboardButton("💰 DCA", callback_data="menu_dca"),
         ],
     ])
@@ -127,6 +131,7 @@ def quick_actions_keyboard() -> ReplyKeyboardMarkup:
         [KeyboardButton("📬 Addresses"), KeyboardButton("📜 History")],
         [KeyboardButton("📤 Send"), KeyboardButton("📥 Receive")],
         [KeyboardButton("💱 Swap"), KeyboardButton("⛽ Gas")],
+        [KeyboardButton("➕ Add Contact"), KeyboardButton("👥 Contacts")],
         [KeyboardButton("💰 DCA")],
     ], resize_keyboard=True, one_time_keyboard=False)
 
@@ -367,6 +372,7 @@ def format_send_preview(data: dict) -> str:
     amount  = data.get("amount", "")
     token   = data.get("token", "").upper()
     chain   = data.get("chain", "ethereum")
+    contact_name = data.get("contact_name")
 
     # fee_usd might arrive as a dict e.g. {"standard": 0.12, "fast": 0.18}
     raw_fee = data.get("fee_usd") or 0.0
@@ -387,7 +393,8 @@ def format_send_preview(data: dict) -> str:
         f"{warning}"
         f"📤 <b>Send Preview</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"<b>To:</b>      <code>{escape_html(short_to)}</code>\n"
+        f"<b>To:</b>      <code>{escape_html(contact_name or short_to)}</code>\n"
+        f"{f'<b>Address:</b> <code>{escape_html(short_to)}</code>\\n' if contact_name else ''}"
         f"<b>Amount:</b>  <code>{escape_html(str(amount))} {escape_html(token)}</code>\n"
         f"<b>Chain:</b>   {emoji} {chain_label}\n\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -502,6 +509,35 @@ def format_tx_success(tx_hash: str, chain: str, amount: str, token: str, to_addr
         f"<code>{escape_html(tx_hash)}</code>"
         f"{explorer_line}"
     )
+
+
+def format_add_contact_help() -> str:
+    return (
+        "➕ <b>Add Contact</b>\n\n"
+        "Send a message in this format:\n"
+        "<code>Add contact George Bush ETH 0x50C5b2284D7fc3E7DE4c132D0CD5ABFD7aa11247</code>\n\n"
+        "You can also quote multi-word names:\n"
+        "<code>Add contact \"George Bush\" ETH 0x50C5b2284D7fc3E7DE4c132D0CD5ABFD7aa11247</code>"
+    )
+
+
+def format_contacts_list(contacts: list[dict]) -> str:
+    if not contacts:
+        return (
+            "👥 <b>Your Contacts</b>\n\n"
+            "<i>No contacts saved yet.</i>\n"
+            "Tap <b>Add Contact</b> or send a message like:\n"
+            "<code>Add contact Daniel ETH 0x...</code>"
+        )
+
+    lines = ["👥 <b>Your Contacts</b>", ""]
+    for contact in contacts[:20]:
+        lines.append(
+            f"<b>{escape_html(contact['name'])}</b>\n"
+            f"  Chain: <code>{escape_html(str(contact['chain']).upper())}</code>\n"
+            f"  Address: <code>{escape_html(contact['wallet_address'])}</code>\n"
+        )
+    return "\n".join(lines)
 
 
 def format_error(message: str) -> str:

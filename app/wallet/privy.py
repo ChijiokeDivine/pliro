@@ -72,7 +72,7 @@ class PrivyClient:
         if data_hex:
             transaction["data"] = data_hex
         if gas_hex:
-            transaction["gas"] = gas_hex
+            logger.info("Ignoring gas override for Privy RPC; transaction.gas is not supported")
 
         payload = {
             "method": "eth_sendTransaction",

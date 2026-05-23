@@ -17,6 +17,8 @@ from app.bot.ui_formatters import (
     format_portfolio,
     format_token_positions,
     format_wallet_addresses,
+    format_contacts_list,
+    format_add_contact_help,
     format_receive_card,
     format_transaction_history,
     format_send_preview,
@@ -60,9 +62,27 @@ send_sessions: dict = {}     # user_id → pending send details
 import re
 
 SEND_PATTERN = re.compile(
-    r"send\s+([\d.]+)\s+(\w+)(?:\s+on\s+(\w+))?\s+to\s+(0x[a-fA-F0-9]{40})",
+    r'^\s*send\s+(?P<amount>[\d.]+)\s+(?P<token>\w+)'
+    r'(?:\s+on\s+(?P<chain>ethereum|eth|base|arbitrum|bnb(?:\s+chain)?|bnb|polygon|matic|optimism|op|celo|solana|sol))?'
+    r'\s+to\s+(?:"(?P<quoted_target>[^"]+)"|(?P<target>.+?))\s*$',
     re.IGNORECASE
 )
+
+ADD_CONTACT_PATTERN = re.compile(
+    r'^\s*add\s+contact(?:\s+(?:named|for))?\s+'
+    r'(?:"(?P<quoted_name>[^"]+)"|(?P<name>.+?))\s+'
+    r'(?P<chain>ethereum|eth|base|arbitrum|bnb(?:\s+chain)?|bnb|polygon|matic|optimism|op|celo|solana|sol)\s+'
+    r'(?P<address>0x[a-fA-F0-9]{40}|[1-9A-HJ-NP-Za-km-z]{32,44})\s*$',
+    re.IGNORECASE,
+)
+
+LIST_CONTACTS_PATTERN = re.compile(
+    r'^\s*(?:show|list|view)\s+(?:my\s+)?contacts\s*$',
+    re.IGNORECASE,
+)
+
+EVM_ADDRESS_PATTERN = re.compile(r"^0x[a-fA-F0-9]{40}$")
+SOLANA_ADDRESS_PATTERN = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
 
 # ─── Safe send helper ───────────────────────────────────────────────────────
 
@@ -100,6 +120,86 @@ async def safe_send(update_or_query, text: str, keyboard=None, edit: bool = Fals
                 return await update_or_query.message.reply_text(**plain_kwargs)
         except Exception as e2:
             logger.error(f"Plain text fallback also failed: {e2}")
+
+
+def _match_group(match: re.Match, *names: str) -> str | None:
+    for name in names:
+        value = match.groupdict().get(name)
+        if value:
+            return value.strip()
+    return None
+
+
+def _clean_target(value: str) -> str:
+    return (value or "").strip().strip('"').strip("'")
+
+
+def _is_valid_address_for_chain(chain: str, address: str) -> bool:
+    normalized_chain = crud.normalize_chain_name(chain)
+    if normalized_chain == "solana":
+        return bool(SOLANA_ADDRESS_PATTERN.match(address))
+    return bool(EVM_ADDRESS_PATTERN.match(address))
+
+
+async def _resolve_send_target(user_id: str, target: str, chain: str | None = None) -> dict | None:
+    cleaned_target = _clean_target(target)
+    async with async_session_factory() as session:
+        user = await crud.get_or_create_user(session, int(user_id))
+        resolved = await crud.resolve_contact_target(session, user.id, cleaned_target, chain)
+
+    if resolved:
+        return {
+            "address": resolved["address"],
+            "chain": resolved["chain"],
+            "contact_name": resolved["name"],
+        }
+
+    normalized_chain = crud.normalize_chain_name(chain or "ethereum")
+    if _is_valid_address_for_chain(normalized_chain, cleaned_target):
+        return {
+            "address": cleaned_target,
+            "chain": normalized_chain,
+            "contact_name": None,
+        }
+
+    return None
+
+
+async def _save_contact(user_id: str, name: str, chain: str, wallet_address: str) -> dict:
+    normalized_chain = crud.normalize_chain_name(chain)
+    if not _is_valid_address_for_chain(normalized_chain, wallet_address):
+        raise ValueError(f"Invalid wallet address for {normalized_chain}.")
+
+    async with async_session_factory() as session:
+        async with session.begin():
+            user = await crud.get_or_create_user(session, int(user_id))
+            contact = await crud.upsert_contact(
+                session,
+                user_id=user.id,
+                name=name,
+                chain=normalized_chain,
+                wallet_address=wallet_address,
+            )
+
+    return {
+        "name": contact.name,
+        "chain": contact.chain,
+        "wallet_address": contact.wallet_address,
+    }
+
+
+async def _load_contacts(user_id: str) -> list[dict]:
+    async with async_session_factory() as session:
+        user = await crud.get_or_create_user(session, int(user_id))
+        contacts = await crud.list_user_contacts(session, user.id)
+    return [
+        {
+            "name": contact.name,
+            "chain": contact.chain,
+            "wallet_address": contact.wallet_address,
+        }
+        for contact in contacts
+    ]
 
 
 # ─── /start command ─────────────────────────────────────────────────────────
@@ -250,7 +350,8 @@ async def send_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Just tell me what to send:\n\n"
         "<i>Example:\n"
         "  Send 0.01 ETH to 0xABC...123\n"
-        "  Send 5 USDC on Base to 0xABC...123</i>"
+        "  Send 5 USDC on Base to 0xABC...123\n"
+        "  Send 0.1 ETH to Daniel</i>"
     )
     await safe_send(update, text, keyboard=quick_actions_keyboard())
 
@@ -398,9 +499,21 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Just tell me what to send in the chat:\n\n"
             "<i>Example:\n"
             "  Send 0.01 ETH to 0xABC...123\n"
-            "  Send 5 USDC on Base to 0xABC...123</i>"
+            "  Send 5 USDC on Base to 0xABC...123\n"
+            "  Send 0.1 ETH to Daniel</i>"
         )
         await safe_send(query, text, keyboard=back_to_menu_keyboard(), edit=True)
+
+    elif data == "menu_add_contact":
+        await safe_send(query, format_add_contact_help(), keyboard=back_to_menu_keyboard(), edit=True)
+
+    elif data == "menu_contacts":
+        try:
+            contacts = await _load_contacts(user_id)
+            await safe_send(query, format_contacts_list(contacts), keyboard=back_to_menu_keyboard(), edit=True)
+        except Exception as e:
+            logger.error(f"Contacts callback error: {e}", exc_info=True)
+            await safe_send(query, format_error(str(e)), keyboard=back_to_menu_keyboard(), edit=True)
 
     # ── Swap (prompt via chat) ─────────────────────────────────────────────
     elif data == "menu_swap":
@@ -559,6 +672,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📥 Receive": lambda u, c: button_callback_helper(u, c, "menu_receive"),
         "💱 Swap": swap_command,
         "⛽ Gas": lambda u, c: button_callback_helper(u, c, "menu_gas"),
+        "➕ Add Contact": lambda u, c: button_callback_helper(u, c, "menu_add_contact"),
+        "👥 Contacts": lambda u, c: button_callback_helper(u, c, "menu_contacts"),
         "💰 DCA": lambda u, c: button_callback_helper(u, c, "menu_dca"),
         "🏠 Main Menu": menu_command,
     }
@@ -606,14 +721,51 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_send(update, "❌ <b>Cancelled.</b>", keyboard=quick_actions_keyboard())
         return
 
+    if text.strip().lower() == "add contact":
+        await safe_send(update, format_add_contact_help(), keyboard=quick_actions_keyboard())
+        return
+
+    if LIST_CONTACTS_PATTERN.match(text):
+        try:
+            contacts = await _load_contacts(str(update.effective_user.id))
+            await safe_send(update, format_contacts_list(contacts), keyboard=quick_actions_keyboard())
+        except Exception as e:
+            logger.error(f"List contacts error: {e}", exc_info=True)
+            await safe_send(update, format_error(str(e)), keyboard=quick_actions_keyboard())
+        return
+
+    add_contact_match = ADD_CONTACT_PATTERN.match(text)
+    if add_contact_match:
+        try:
+            name = _match_group(add_contact_match, "quoted_name", "name")
+            chain = _match_group(add_contact_match, "chain")
+            wallet_address = _match_group(add_contact_match, "address")
+            contact = await _save_contact(str(update.effective_user.id), name, chain, wallet_address)
+            await safe_send(
+                update,
+                (
+                    "✅ <b>Contact Saved</b>\n\n"
+                    f"<b>Name:</b> {contact['name']}\n"
+                    f"<b>Chain:</b> <code>{contact['chain'].upper()}</code>\n"
+                    f"<b>Address:</b> <code>{contact['wallet_address']}</code>"
+                ),
+                keyboard=quick_actions_keyboard(),
+            )
+        except Exception as e:
+            logger.error(f"Add contact error: {e}", exc_info=True)
+            await safe_send(update, format_error(str(e)), keyboard=quick_actions_keyboard())
+        return
+
     if await try_handle_dca_message(update, context, text):
         return
 
-    match = SEND_PATTERN.search(text)
+    match = SEND_PATTERN.match(text)
     if match:
-        amount, token, chain, to_address = match.groups()
-        chain = chain or "ethereum"
-        await _handle_send_preview(update, context, amount, token, chain, to_address)
+        amount = _match_group(match, "amount")
+        token = _match_group(match, "token")
+        chain = _match_group(match, "chain")
+        target = _match_group(match, "quoted_target", "target")
+        await _handle_send_preview(update, context, amount, token, chain or "ethereum", target)
         return
 
         
@@ -800,6 +952,17 @@ async def button_callback_helper(update: Update, context: ContextTypes.DEFAULT_T
         )
         await safe_send(update, text, keyboard=quick_actions_keyboard())
 
+    elif button_data == "menu_add_contact":
+        await safe_send(update, format_add_contact_help(), keyboard=quick_actions_keyboard())
+
+    elif button_data == "menu_contacts":
+        try:
+            contacts = await _load_contacts(user_id)
+            await safe_send(update, format_contacts_list(contacts), keyboard=quick_actions_keyboard())
+        except Exception as e:
+            logger.error(f"Contacts command error: {e}", exc_info=True)
+            await safe_send(update, format_error(str(e)), keyboard=quick_actions_keyboard())
+
 
 # ─── /swap conversation ──────────────────────────────────────────────────────
 
@@ -902,7 +1065,7 @@ async def swap_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-async def _handle_send_preview(update, context, amount, token, chain, to_address):
+async def _handle_send_preview(update, context, amount, token, chain, target):
     user_id = str(update.effective_user.id)
     
     status = await update.message.reply_text(
@@ -910,24 +1073,29 @@ async def _handle_send_preview(update, context, amount, token, chain, to_address
     )
     
     try:
-        # Call directly — no agent, no LLM
-        from app.wallet.gas import GasService
-        fee_usd = await gas_service.estimate_fee_usd(chain_id=chain, action="send")
+        resolved = await _resolve_send_target(user_id, target, chain)
+        if not resolved:
+            raise ValueError(f"Unknown contact or invalid address: {target}")
+
+        resolved_chain = resolved["chain"] or "ethereum"
+        fee_usd = await gas_service.estimate_fee_usd(chain_id=resolved_chain, action="send")
         
         # Store in session for confirm button
         send_sessions[user_id] = {
-            "to_address": to_address,
+            "to_address": resolved["address"],
             "amount": amount,
             "token": token,
-            "chain": chain,
+            "chain": resolved_chain,
+            "contact_name": resolved["contact_name"],
         }
         
         preview_text = format_send_preview({
-            "to": to_address,
+            "to": resolved["address"],
             "amount": amount,
             "token": token,
-            "chain": chain,
+            "chain": resolved_chain,
             "fee_usd": fee_usd,
+            "contact_name": resolved["contact_name"],
         })
         
         await context.bot.edit_message_text(
